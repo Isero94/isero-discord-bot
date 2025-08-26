@@ -40,7 +40,7 @@ from discord.ext import commands
 #
 # The bot will first check for an environment variable called ``DISCORD_TOKEN``.
 # This makes deployment to cloud platforms easier because you can inject
-your secret without hard‑coding it into the code.  If the environment
+#your secret without hard‑coding it into the code.  If the environment
 variable is not set, it falls back to the placeholder below, which
 will cause the program to raise an error in ``main()`` until you
 configure it properly.
