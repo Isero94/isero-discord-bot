@@ -6,7 +6,7 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
 STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0")) or None
 TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0")) or None
 
-DB_PATH = os.getenv("DB_PATH", "data/isero.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY_1", ""))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
