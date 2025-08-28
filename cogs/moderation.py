@@ -54,43 +54,49 @@ class Moderation(commands.Cog):
             return
 
         content = message.content or ""
+        prof = await Profiles.get_profile(message.guild.id, message.author.id)
+
+        # Language check logic
+        is_hu_en_user = False
         try:
             lang = detect(content) if content.strip() else "en"
+            if lang in ("hu", "en"):
+                is_hu_en_user = True
         except Exception:
-            lang = "en"
-        prof = await Profiles.get_profile(message.guild.id, message.author.id)
-        if lang not in ("hu","en"):
+            is_hu_en_user = False
+        if not is_hu_en_user and message.author.id != self.bot.user.id and str(message.author.id) != self.bot.owner_id:
             count = (prof.get("non_en_hu_count") or 0) + 1
             if count % max(LANG_HINT_EVERY,1) == 0:
                 try:
-                    await message.author.send("This is an English server. Please use **English** for clarity. Használhatsz fordítót is, köszi! ✌️")
+                    await message.author.send("Hi, please use English on this server for clarity and accessibility. You can use a translator if needed! Thanks! ✌️")
                 except Exception:
                     pass
             await Profiles.update_profile(message.guild.id, message.author.id, non_en_hu_count=count)
 
+        # Swear word logic
         bads = len(BAD_RE.findall(content))
         excess = max(0, bads - 2)
         stage = prof.get("stage") or 0
-        total = (prof.get("swear_excess") or 0)
+        total = prof.get("swear_excess") or 0
 
         action = None
-        if stage == 0:
-            if excess > 0:
+        if excess > 0:
+            if stage == 0:
                 total += excess
-                if total >= 4:
+                if total >= 5:
                     stage = 1
-                    action = ("mute", 40*60, "Stage1: 40 min timeout (excess ≥ 4)")
-        elif stage == 1:
-            if bads >= 4 or excess >= 2:
-                stage = 2
-                action = ("mute", 8*60*60, "Stage2: 8 hours timeout")
-            else:
+                    action = ("mute", 40*60, "Stage 1: 40 min timeout (excess >= 5)")
+            elif stage == 1:
                 total += excess
-        else:
-            if bads >= 3:
-                stage = 3
-                action = ("perma", None, "Stage3: permanent mute until staff lifts")
-
+                if total >= 3:
+                    stage = 2
+                    action = ("mute", 8*60*60, "Stage 2: 8 hours timeout (excess >= 3)")
+            elif stage == 2:
+                total += excess
+                if total >= 1:
+                    stage = 3
+                    action = ("perma", None, "Stage 3: Permanent mute")
+        
         await Profiles.update_profile(message.guild.id, message.author.id, stage=stage, swear_excess=total, last_msg_ts=time.time())
 
         if action:
