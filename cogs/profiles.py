@@ -45,7 +45,7 @@ class Profiles(commands.Cog):
             print("[profiles] DATABASE_URL is not set. Database features will be unavailable.")
             return
 
-        Profiles.pool = await asyncpg.create_pool(DATABASE_URL)
+        Profiles.pool = await asyncpg.create_pool(DATABASE_URL, ssl='require')
         async with Profiles.pool.acquire() as conn:
             await conn.execute(SCHEMA)
         print("[profiles] PostgreSQL DB ready ✅")
