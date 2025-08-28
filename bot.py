@@ -43,7 +43,6 @@ INITIAL_EXTENSIONS = [
 ]
 
 async def load_extensions_and_views(bot: IseroBot):
-    # COG-ok
     for ext in INITIAL_EXTENSIONS:
         try:
             await bot.load_extension(ext)
@@ -51,9 +50,8 @@ async def load_extensions_and_views(bot: IseroBot):
         except Exception as e:
             print(f"[BOOT] Failed to load {ext}: {e}")
 
-    # Perzisztens view (ha van)
     try:
-        from cogs.agent_gate import TicketHubView  # késői import, ha nincs, nem dől össze
+        from cogs.agent_gate import TicketHubView
         bot.add_view(TicketHubView())
         print("[BOOT] TicketHubView added")
     except Exception as e:
@@ -64,12 +62,9 @@ async def load_extensions_and_views(bot: IseroBot):
 @commands.is_owner()
 @commands.command()
 async def sync(ctx: commands.Context):
-    """
-    Owner-only: slash parancsok szinkronizálása.
-    Ha van GUILD_ID, akkor csak arra a guildre; különben globális.
-    """
+    """Owner-only: slash parancsok szinkronizálása."""
     try:
-        bot: IseroBot = ctx.bot  # típus-hint csak
+        bot: IseroBot = ctx.bot
         gid = os.getenv("GUILD_ID")
         if gid:
             guild = discord.Object(id=int(gid))
@@ -83,13 +78,12 @@ async def sync(ctx: commands.Context):
 
 
 async def add_owner_commands(bot: IseroBot):
-    # külön tesszük, hogy biztosan regisztrálódjon
     bot.add_command(sync)
 
 
-@discord.utils.copy_doc(commands.Bot.on_ready)
+@commands.Cog.listener()
 async def on_ready():
-    pass  # csak hogy legyen docstring (nem kötelező)
+    print(f"✅ ISERO online")
 
 
 # ---- Belépési pont ----
@@ -104,8 +98,6 @@ async def main():
         help_command=None,
     )
 
-    # események / parancsok regisztrálása
-    bot.add_listener(lambda: print(f"✅ ISERO online: {bot.user} ({bot.user.id})"), "on_ready")
     await add_owner_commands(bot)
 
     async with bot:
