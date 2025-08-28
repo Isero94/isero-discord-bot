@@ -107,8 +107,11 @@ Once sent, staff will review. Thanks!""")
         async for m in state.thread.history(limit=50, oldest_first=True):
             if m.author.bot: continue
             messages.append(f"{m.author.display_name}: {m.content}")
-        prompt = "Summarize the user's request in <=800 chars. Include key requirements and up to 4 reference URLs if present.\n\n" + "\n".join(messages[-20:])
-        summary = await self.call_openai(prompt)
+        
+        system_prompt = "You are Isero, a highly skilled hacker and marketing strategist. You are writing a ticket summary for your staff. Be concise, professional, and formal."
+        user_prompt = "Summarize the user's request in <=800 chars. Include key requirements and up to 4 reference URLs if present.\n\n" + "\n".join(messages[-20:])
+        summary = await self.call_openai(user_prompt, system_prompt=system_prompt)
+        
         try:
             await state.thread.send("✅ Thanks! Here's the ticket summary for staff:\n" + summary)
         except Exception: pass
@@ -117,17 +120,20 @@ Once sent, staff will review. Thanks!""")
     async def agent_reply_short(self, user_text: str, state: "TicketThreadState") -> str:
         if not OPENAI_API_KEY:
             return "OpenAI key not configured."
-        prompt = f"You are ISERO assistant. Short helpful answers (<=300 chars), friendly and concise. Category: {state.category}. User says: {user_text}"
-        return await self.call_openai(prompt)
+        
+        system_prompt = "You are Isero, a mysterious and sarcastic hacker/marketing strategist. Your goal is to keep the conversation brief, to get the point, and to get the user's request. You are a professional, but your wit shines through. Short answers only (<=300 chars)."
+        user_prompt = f"Category: {state.category}. User says: {user_text}"
+        
+        return await self.call_openai(user_prompt, system_prompt=system_prompt)
 
-    async def call_openai(self, prompt: str) -> str:
+    async def call_openai(self, user_prompt: str, system_prompt: str) -> str:
         if not client:
             return "OpenAI not configured."
         try:
             rsp = client.chat.completions.create(
                 model=OPENAI_MODEL,
-                messages=[{"role":"system","content":"You are a helpful Discord assistant."},
-                          {"role":"user","content":prompt}],
+                messages=[{"role":"system","content":system_prompt},
+                          {"role":"user","content":user_prompt}],
                 temperature=0.7,
                 max_tokens=400
             )
@@ -142,7 +148,9 @@ Once sent, staff will review. Thanks!""")
         if not OPENAI_API_KEY:
             await interaction.response.send_message("OpenAI key not set.", ephemeral=True); return
         await interaction.response.defer(thinking=True, ephemeral=False)
-        ans = await self.call_openai(prompt)
+
+        system_prompt = "You are Isero, a highly skilled and professional AI assistant for staff. You are concise, respectful, and detail-oriented. Answer with comprehensive knowledge."
+        ans = await self.call_openai(prompt, system_prompt=system_prompt)
         await interaction.followup.send(ans)
 
 async def setup(bot):
