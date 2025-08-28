@@ -41,9 +41,9 @@ class IseroBot(commands.Bot):
         except Exception as e:
             print(f"[BOOT] Sync failed: {e}")
 
-@IseroBot.event
-async def on_ready():
-    print(f"✅ ISERO online: {IseroBot.user} ({IseroBot.user.id})")
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print(f"✅ ISERO online: {self.user} ({self.user.id})")
 
 async def main():
     token = DISCORD_TOKEN or os.getenv("DISCORD_TOKEN", "")
