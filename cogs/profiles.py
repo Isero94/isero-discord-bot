@@ -1,15 +1,16 @@
 import os
-import pathlib
+import asyncio
 import aiosqlite
 from discord.ext import commands
 
-# DB helye: először nézzük az ENV változót, különben marad a régi helyi fájl
+# ---- DB path: env -> fallback ----
 DB_PATH = os.getenv("DB_PATH", "data/isero.db")
+DB_DIR = os.path.dirname(DB_PATH) or "."
 
-# Biztosítsuk, hogy a DB könyvtára létezik (különben sqlite hibát dob)
-pathlib.Path(os.path.dirname(DB_PATH) or ".").mkdir(parents=True, exist_ok=True)
+# biztos, hogy a könyvtár létezik
+os.makedirs(DB_DIR, exist_ok=True)
 
-SCHEMA = '''
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_profiles (
   guild_id INTEGER,
   user_id INTEGER,
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   msg_total INTEGER DEFAULT 0,
   msg_since_lang INTEGER DEFAULT 0,
   last_msg_ts REAL,
-  PRIMARY KEY (guild_id,user_id)
+  PRIMARY KEY (guild_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS tickets (
   guild_id INTEGER,
@@ -43,41 +44,54 @@ CREATE TABLE IF NOT EXISTS assistant_threads (
   user_id INTEGER,
   thread_id TEXT,
   last_dm_ts REAL,
-  PRIMARY KEY (guild_id,user_id)
+  PRIMARY KEY (guild_id, user_id)
 );
-'''
+"""
 
 class Profiles(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        bot.loop.create_task(self._init_db())
 
     async def _init_db(self):
-        async with aiosqlite.connect(DB_PATH) as db:
+        # Jelöld a logban, hogy mit használ
+        print(f"[profiles] Using DB_PATH = {DB_PATH}")
+        # Kapcsolódás + alap PRAGMA-k
+        async with aiosqlite.connect(DB_PATH, timeout=30) as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
             await db.executescript(SCHEMA)
             await db.commit()
+        print("[profiles] DB ready ✅")
 
     @staticmethod
     async def get_profile(guild_id: int, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with aiosqlite.connect(DB_PATH, timeout=30) as db:
             cur = await db.execute(
-                '''SELECT guild_id,user_id,stage,swear_hits,timeouts,perma_flag,
-                          intent_score,mood_score,msg_total,msg_since_lang,last_msg_ts
-                   FROM user_profiles WHERE guild_id=? AND user_id=?''',
+                """
+                SELECT guild_id, user_id, stage, swear_hits, timeouts, perma_flag,
+                       intent_score, mood_score, msg_total, msg_since_lang, last_msg_ts
+                FROM user_profiles
+                WHERE guild_id = ? AND user_id = ?
+                """,
                 (guild_id, user_id),
             )
             row = await cur.fetchone()
             if row:
-                keys = ['guild_id','user_id','stage','swear_hits','timeouts','perma_flag',
-                        'intent_score','mood_score','msg_total','msg_since_lang','last_msg_ts']
+                keys = [
+                    "guild_id","user_id","stage","swear_hits","timeouts","perma_flag",
+                    "intent_score","mood_score","msg_total","msg_since_lang","last_msg_ts"
+                ]
                 return dict(zip(keys, row))
 
+            # ha nincs, beszúrjuk az alap rekordot
             await db.execute(
-                'INSERT INTO user_profiles (guild_id,user_id) VALUES (?,?)',
+                "INSERT INTO user_profiles (guild_id, user_id) VALUES (?, ?)",
                 (guild_id, user_id),
             )
             await db.commit()
-            return await Profiles.get_profile(guild_id, user_id)
+
+        # rekurzívan visszaolvassuk, hogy map-et adjunk vissza
+        return await Profiles.get_profile(guild_id, user_id)
 
     @staticmethod
     async def update_profile(guild_id: int, user_id: int, **kv):
@@ -85,12 +99,15 @@ class Profiles(commands.Cog):
             return
         cols = ",".join([f"{k}=?" for k in kv.keys()])
         vals = list(kv.values()) + [guild_id, user_id]
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with aiosqlite.connect(DB_PATH, timeout=30) as db:
             await db.execute(
-                f'UPDATE user_profiles SET {cols} WHERE guild_id=? AND user_id=?',
+                f"UPDATE user_profiles SET {cols} WHERE guild_id=? AND user_id=?",
                 vals,
             )
             await db.commit()
 
 async def setup(bot):
-    await bot.add_cog(Profiles(bot))
+    cog = Profiles(bot)
+    await bot.add_cog(cog)
+    # külön taskként indítjuk az initet, hogy ne blokkoljon
+    asyncio.create_task(cog._init_db())
