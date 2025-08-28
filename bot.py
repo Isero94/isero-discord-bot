@@ -10,8 +10,6 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix=commands.when_mentioned_or("!"), intents=intents, help_command=None)
-
 INITIAL_EXTENSIONS = [
     "cogs.profiles",
     "cogs.logging",
@@ -19,36 +17,39 @@ INITIAL_EXTENSIONS = [
     "cogs.agent_gate",
 ]
 
-async def _load_extensions():
-    for ext in INITIAL_EXTENSIONS:
-        try:
-            await bot.load_extension(ext)
-            print(f"[BOOT] loaded {ext}")
-        except Exception as e:
-            print(f"[BOOT] FAILED {ext}: {e}")
-
 class IseroBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started_at = discord.utils.utcnow()
+
     async def setup_hook(self):
-        await _load_extensions()
+        print(f"[BOOT] ISERO setup_hook started...")
+        for ext in INITIAL_EXTENSIONS:
+            try:
+                await self.load_extension(ext)
+                print(f"[BOOT] Loaded {ext}")
+            except Exception as e:
+                print(f"[BOOT] FAILED to load {ext}: {e}")
+        
         try:
             if GUILD_ID:
                 await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                print(f"[BOOT] app commands synced to guild {GUILD_ID}")
+                print(f"[BOOT] App commands synced to guild {GUILD_ID}")
             else:
                 await self.tree.sync()
-                print("[BOOT] global app commands synced")
+                print("[BOOT] Global app commands synced")
         except Exception as e:
-            print(f"[BOOT] sync failed: {e}")
+            print(f"[BOOT] Sync failed: {e}")
 
-@bot.event
+@IseroBot.event
 async def on_ready():
-    print(f"✅ ISERO online: {bot.user} ({bot.user.id})")
+    print(f"✅ ISERO online: {IseroBot.user} ({IseroBot.user.id})")
 
 async def main():
     token = DISCORD_TOKEN or os.getenv("DISCORD_TOKEN", "")
     if not token:
         raise RuntimeError("Missing DISCORD_TOKEN env.")
-    global bot
+    
     bot = IseroBot(command_prefix=commands.when_mentioned_or("!"), intents=intents, help_command=None)
     async with bot:
         await bot.start(token)
