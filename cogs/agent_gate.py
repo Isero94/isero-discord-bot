@@ -1,31 +1,53 @@
-import time
+import os, time
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands, ui, ButtonStyle
+from discord import ui, ButtonStyle, app_commands
 from openai import OpenAI
+
+# --- Konfig + ENV fallback ---
 from config import (
-    OPENAI_API_KEY, OPENAI_MODEL,
-    STAFF_CHANNEL_ID, TICKET_HUB_CHANNEL_ID,
-    TICKET_USER_MAX_MSG, TICKET_MSG_CHAR_LIMIT, TICKET_IDLE_SECONDS,
-    WAKE_WORDS, ALLOW_STAFF_FREESPEECH
+    OPENAI_API_KEY as CFG_OPENAI_API_KEY,
+    OPENAI_MODEL as CFG_OPENAI_MODEL,
+    STAFF_CHANNEL_ID as CFG_STAFF_CHANNEL_ID,
+    TICKET_HUB_CHANNEL_ID as CFG_TICKET_HUB_CHANNEL_ID,
+    TICKET_USER_MAX_MSG as CFG_TU_MAX,
+    TICKET_MSG_CHAR_LIMIT as CFG_CHARLIM,
+    TICKET_IDLE_SECONDS as CFG_IDLE,
+    WAKE_WORDS as CFG_WWS,
+    ALLOW_STAFF_FREESPEECH as CFG_ALLOW,
 )
+
+def as_bool(x):
+    return str(x).strip().lower() in ("1","true","yes","y","on")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", CFG_OPENAI_API_KEY)
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL",   CFG_OPENAI_MODEL or "gpt-4o-mini")
+STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", str(CFG_STAFF_CHANNEL_ID or 0)) or 0)
+TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", str(CFG_TICKET_HUB_CHANNEL_ID or 0)) or 0)
+TICKET_USER_MAX_MSG = int(os.getenv("TICKET_USER_MAX_MSG", str(CFG_TU_MAX or 5)))
+TICKET_MSG_CHAR_LIMIT = int(os.getenv("TICKET_MSG_CHAR_LIMIT", str(CFG_CHARLIM or 800)))
+TICKET_IDLE_SECONDS = int(os.getenv("TICKET_IDLE_SECONDS", str(CFG_IDLE or 600)))
+ALLOW_STAFF_FREESPEECH = as_bool(os.getenv("ALLOW_STAFF_FREESPEECH", CFG_ALLOW))
+WAKE_WORDS = [w.strip() for w in os.getenv("WAKE_WORDS", ",".join(CFG_WWS or ["isero"])).split(",") if w.strip()]
+
+print(f"[DEBUG] OPENAI_API_KEY present? {bool(OPENAI_API_KEY)}")
+print(f"[DEBUG] OPENAI_MODEL = {OPENAI_MODEL}")
+print(f"[DEBUG] STAFF_CHANNEL_ID = {STAFF_CHANNEL_ID}")
+print(f"[DEBUG] ALLOW_STAFF_FREESPEECH = {ALLOW_STAFF_FREESPEECH}")
+print(f"[DEBUG] WAKE_WORDS = {WAKE_WORDS}")
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-TICKET_CATEGORIES = ["General help", "Commission", "Mebinu", "Other"]
+def short(txt: str, n: int = 300):
+    return txt if len(txt) <= n else txt[: n-3] + "…"
 
-def short(txt: str, n=300):
-    return txt if len(txt) <= n else txt[: n-3] + "..."
+TICKET_CATEGORIES = ["General help", "Commission", "Mebinu", "Other"]
 
 class TicketStart(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         for i, cat in enumerate(TICKET_CATEGORIES):
-            self.add_item(
-                ui.Button(label=f"Open a ticket: {cat}",
-                          style=ButtonStyle.primary,
-                          custom_id=f"ticket_{i}")
-            )
+            self.add_item(ui.Button(label=f"Open a ticket: {cat}", style=ButtonStyle.primary, custom_id=f"ticket_{i}"))
 
 class TicketThreadState:
     def __init__(self, thread: discord.Thread, user: discord.Member, category: str):
@@ -49,8 +71,9 @@ class AgentGate(commands.Cog):
 
     async def call_openai(self, user_prompt: str, system_prompt: str) -> str:
         if not client:
-            return "OpenAI nincs beállítva."
+            return "OpenAI kulcs hiányzik (client=None)."
         try:
+            print("[DEBUG] GPT call attempt")
             rsp = client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=[
@@ -58,193 +81,142 @@ class AgentGate(commands.Cog):
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.7,
-                max_tokens=600,
+                max_tokens=700,
             )
-            return (rsp.choices[0].message.content or "").strip()
+            content = (rsp.choices[0].message.content or "").strip()
+            print("[DEBUG] GPT response OK, len=", len(content))
+            return content
         except Exception as e:
+            print(f"[DEBUG] GPT error: {e}")
             return f"(AI error: {e})"
 
-    # ----------------- FŐ ÜZENET FIGYELŐ (staff + ticket) -----------------
+    # ----------------- Üzenet figyelés -----------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
 
-        # DEBUG: log minden üzenetről
         try:
-            print(f"[MSG] ch={message.channel.id} author={message.author} -> {message.content[:120]}")
+            print(f"[MSG] in={message.channel.id} staff={STAFF_CHANNEL_ID} author={message.author} -> {message.content[:120]}")
         except Exception:
             pass
 
-        # 1) STAFF csatorna: szabad beszéd GPT-vel
-        if ALLOW_STAFF_FREESPEECH and message.guild and STAFF_CHANNEL_ID and message.channel.id == STAFF_CHANNEL_ID:
-            print("[STAFF] message matched staff channel")
+        # STAFF szabad beszéd
+        if (
+            ALLOW_STAFF_FREESPEECH
+            and message.guild
+            and STAFF_CHANNEL_ID
+            and message.channel.id == STAFF_CHANNEL_ID
+        ):
+            print("[STAFF] matched staff channel")
             content = (message.content or "").strip()
-            if content:
-                # mention / wake-word vágás (nem kötelező, mindenre válaszolunk)
-                if self.bot.user and content.startswith(f"<@{self.bot.user.id}>"):
-                    content = content.split(">", 1)[1].strip() if ">" in content else content
+
+            # Wakey-wakey
+            low = content.lower()
+            for w in WAKE_WORDS:
+                if low.startswith(w.lower() + " "):
+                    content = content[len(w):].strip()
+                    break
+
+            if not content:
+                return
+
+            sys = (
+                "You are ISERO, the staff assistant. You respond in Hungarian or English, "
+                "matching the user's language. Be concrete and helpful. "
+                "If a Discord slash command is appropriate, put it on the FIRST LINE as 'CMD: /posthub' "
+                "or 'CMD: none' if no command exists. After that, reply normally."
+            )
+            ans = await self.call_openai(content, system_prompt=sys)
+
+            # parancs kiszedés
+            cmd = None
+            lines = [l for l in ans.splitlines() if l.strip()]
+            if lines and lines[0].lower().startswith("cmd:"):
+                cmd = lines[0][4:].strip()
+                ans = "\n".join(lines[1:]).strip()
+
+            if cmd and cmd.lower() != "none":
+                if cmd.startswith("/posthub") and message.author.guild_permissions.manage_channels:
+                    try:
+                        ctx = await self.bot.get_context(message)
+                        await self.posthub.callback(self, ctx)  # type: ignore
+                    except Exception as e:
+                        await message.channel.send(f"Parancs hívás hiba: {e}")
                 else:
-                    low = content.lower()
-                    for w in WAKE_WORDS:
-                        if low.startswith(w + " "):
-                            content = content[len(w):].strip()
-                            break
+                    await message.channel.send("Nincs ilyen parancs jelenleg vagy nincs jogom lefuttatni.")
 
-                sys = (
-                    "You are ISERO, the staff assistant. You understand and respond in Hungarian and English, "
-                    "matching the user's language and tone (friendly, direct). Be helpful and concrete. "
-                    "If the user asks for a bot action/command, begin the first line with 'CMD:' followed by the command "
-                    "(e.g., 'CMD: /posthub') or 'CMD: none' if no command exists. After that, provide a normal helpful reply."
-                )
-                ans = await self.call_openai(content, system_prompt=sys)
+            if ans:
+                await message.channel.send(ans)
 
-                # CMD sor kinyerése (ha van)
-                cmd = None
-                lines = [l for l in ans.splitlines() if l.strip()]
-                if lines and lines[0].lower().startswith("cmd:"):
-                    cmd = lines[0][4:].strip()
-                    ans = "\n".join(lines[1:]).strip()
-
-                # whitelistes parancs futtatás
-                if cmd:
-                    if cmd.startswith("/posthub") and message.author.guild_permissions.manage_channels:
-                        try:
-                            ctx = await self.bot.get_context(message)
-                            await self.posthub.callback(self, ctx)  # type: ignore
-                        except Exception as e:
-                            await message.channel.send(f"Parancs hívás hiba: {e}")
-                    elif cmd.lower() != "none":
-                        await message.channel.send("Nincs ilyen parancs jelenleg. Írd le pontosan mit szeretnél, és felvesszük slash-ként.")
-
-                if ans:
-                    await message.channel.send(ans)
-
-        # 2) Ticket thread logika
+        # Ticket thread flow
         if isinstance(message.channel, discord.Thread):
-            state = states.get(message.channel.id)
-            if state and not state.closed and message.author.id == state.user.id:
+            st = states.get(message.channel.id)
+            if st and not st.closed and message.author.id == st.user.id:
                 if len(message.content) > TICKET_MSG_CHAR_LIMIT:
-                    await message.reply(f"Kérlek maradj {TICKET_MSG_CHAR_LIMIT} karakternél.")
-                    return
-                state.user_turns += 1
-                state.last_activity = time.time()
-                if state.user_turns > TICKET_USER_MAX_MSG:
-                    await message.reply("Elértük a körlimitet. Összefoglalót készítek.")
-                    await self.finish_with_summary(state)
-                    return
+                    await message.reply(f"Kérlek maradj {TICKET_MSG_CHAR_LIMIT} karakternél."); return
+                st.user_turns += 1
+                st.last_activity = time.time()
+                if st.user_turns > TICKET_USER_MAX_MSG:
+                    await message.reply("Kör limit elérve, összefoglalok."); await self.finish_with_summary(st); return
 
-                system_prompt = (
-                    "You are Isero, a mysterious and sarcastic hacker/marketing strategist. "
-                    "Your goal is to keep the conversation brief, to get the point, and to get the user's request. "
-                    "Short answers only (<=300 chars)."
-                )
-                reply = await self.call_openai(
-                    f"Category: {state.category}. User says: {message.content}",
-                    system_prompt=system_prompt
-                )
-                try:
-                    await message.channel.send(short(reply, TICKET_MSG_CHAR_LIMIT))
-                except Exception:
-                    pass
-                state.agent_turns += 1
-                if state.agent_turns >= TICKET_USER_MAX_MSG:
-                    await self.finish_with_summary(state)
+                sp = ("You are Isero, a terse but helpful assistant. "
+                      "Answer under 300 chars, get to the point.")
+                rr = await self.call_openai(f"Category: {st.category}. User: {message.content}", sp)
+                await message.channel.send(short(rr, TICKET_MSG_CHAR_LIMIT))
+                st.agent_turns += 1
+                if st.agent_turns >= TICKET_USER_MAX_MSG:
+                    await self.finish_with_summary(st)
 
-        # engedjük a slash commandokat és a többi cogot
         await self.bot.process_commands(message)
 
-    async def finish_with_summary(self, state: "TicketThreadState"):
-        messages = []
-        async for m in state.thread.history(limit=50, oldest_first=True):
-            if m.author.bot:
-                continue
-            messages.append(f"{m.author.display_name}: {m.content}")
+    async def finish_with_summary(self, st: TicketThreadState):
+        items = []
+        async for m in st.thread.history(limit=50, oldest_first=True):
+            if m.author.bot: continue
+            items.append(f"{m.author.display_name}: {m.content}")
+        sp = ("You are Isero. Create a concise ticket summary for staff (<=800 chars). "
+              "Include key requirements and up to 4 links if present.")
+        up = "\n".join(items[-20:])
+        summ = await self.call_openai(up, sp)
+        await st.thread.send("✅ Summary for staff:\n" + summ)
+        st.closed = True
 
-        system_prompt = (
-            "You are Isero, a highly skilled hacker and marketing strategist. "
-            "You are writing a ticket summary for your staff. Be concise, professional, and formal."
-        )
-        user_prompt = (
-            "Summarize the user's request in <=800 chars. Include key requirements and up to 4 reference URLs if present.\n\n"
-            + "\n".join(messages[-20:])
-        )
-        summary = await self.call_openai(user_prompt, system_prompt=system_prompt)
-        try:
-            await state.thread.send("✅ Summary for staff:\n" + summary)
-        except Exception:
-            pass
-        state.closed = True
-
-    # -------- Idle checker a ticket szálakra --------
+    # --- idle zárás ---
     @tasks.loop(seconds=30)
     async def idle_checker(self):
         now = time.time()
-        for state in list(states.values()):
-            if state.closed:
-                continue
-            if now - state.last_activity > TICKET_IDLE_SECONDS:
+        for st in list(states.values()):
+            if st.closed: continue
+            if now - st.last_activity > TICKET_IDLE_SECONDS:
                 try:
-                    await state.thread.send(
-                        "⏳ 10 minutes passed without reply.\n"
-                        "**Please fill this mini form:**\n"
-                        "- What do you need? (≤ 800 chars)\n"
-                        "- Deadline (if any)\n"
-                        "- Up to 4 references (links)\n"
-                        "Once sent, staff will review. Thanks!"
+                    await st.thread.send(
+                        "⏳ 10 perc válasz nélkül.\n"
+                        "- Mit szeretnél? (≤ 800 char)\n"
+                        "- Határidő\n"
+                        "- Max 4 referencia link\n"
+                        "Staff hamarosan ránéz. Köszi!"
                     )
-                except Exception:
-                    pass
-                state.closed = True
+                except Exception: pass
+                st.closed = True
 
-    @commands.hybrid_command(name="posthub", description="Post ticket hub buttons in current channel")
+    # --- /posthub ---
+    @commands.hybrid_command(name="posthub", description="Ticket gombok kirakása")
     @commands.has_permissions(manage_channels=True)
     async def posthub(self, ctx: commands.Context):
-        await ctx.send("Click a button to open a private ticket thread with the assistant.", view=TicketStart())
+        await ctx.send("Válassz kategóriát:", view=TicketStart())
 
-    @app_commands.command(name="ask", description="Ask the ISERO agent (staff only).")
+    # --- /ask ---
+    @app_commands.command(name="ask", description="Kérdezd az ISERO-t (staff).")
     async def ask(self, interaction: discord.Interaction, prompt: str):
         if STAFF_CHANNEL_ID and interaction.channel_id != STAFF_CHANNEL_ID:
             await interaction.response.send_message("Használd a staff csatornában.", ephemeral=True); return
         if not OPENAI_API_KEY:
-            await interaction.response.send_message("OpenAI key nincs beállítva.", ephemeral=True); return
-        await interaction.response.defer(thinking=True, ephemeral=False)
-        system_prompt = (
-            "You are ISERO, the staff assistant. You understand and respond in Hungarian and English. "
-            "Be precise, helpful, and actionable."
-        )
-        ans = await self.call_openai(prompt, system_prompt=system_prompt)
+            await interaction.response.send_message("OpenAI key hiányzik.", ephemeral=True); return
+        await interaction.response.defer(thinking=True)
+        sp = ("You are ISERO, the staff assistant. Answer HU/EN precisely and helpfully.")
+        ans = await self.call_openai(prompt, sp)
         await interaction.followup.send(ans)
-
-    @commands.Cog.listener("on_interaction")
-    async def open_ticket_on_click(self, interaction: discord.Interaction):
-        if not isinstance(interaction.data, dict):
-            return
-        cid = str(interaction.data.get("custom_id", ""))
-        if not cid.startswith("ticket_"):
-            return
-        try:
-            idx = int(cid.split("_")[1])
-        except Exception:
-            idx = -1
-        category = TICKET_CATEGORIES[idx] if 0 <= idx < len(TICKET_CATEGORIES) else "Other"
-        if not interaction.channel or not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message("Only in text channels.", ephemeral=True); return
-        thread = await interaction.channel.create_thread(
-            name=f"ticket-{interaction.user.display_name}",
-            type=discord.ChannelType.private_thread,
-            invitable=False
-        )
-        await thread.add_user(interaction.user)
-        state = TicketThreadState(thread, interaction.user, category)
-        states[thread.id] = state
-        await interaction.response.send_message(
-            f"Created {thread.mention} for you. Let's talk!", ephemeral=True
-        )
-        await thread.send(
-            f"Hi {interaction.user.mention}! Category: **{category}**. "
-            f"Describe your request. Max {TICKET_MSG_CHAR_LIMIT} chars; up to {TICKET_USER_MAX_MSG} turns."
-        )
 
 async def setup(bot):
     await bot.add_cog(AgentGate(bot))
