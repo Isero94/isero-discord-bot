@@ -1,74 +1,67 @@
-import asyncio, importlib, os, traceback
-from dotenv import load_dotenv
+import os
+import asyncio
+import importlib
+import logging
+
 import discord
 from discord.ext import commands
-from loguru import logger
 
-from .config import FEATURES, LOG_CHANNEL_ID
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("bot")
 
-COGS_TO_LOAD = [
-    "cogs.utils.logsetup",        # logging first
+INTENTS = discord.Intents.default()
+INTENTS.message_content = True
+INTENTS.members = True
+INTENTS.guilds = True
+INTENTS.reactions = True
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+
+EXTENSIONS = [
+    "cogs.utils.logsetup",
     "cogs.agent.agent_gate",
     "cogs.tickets.tickets",
     "cogs.ranks.progress",
     "cogs.ranks.rolesync",
     "cogs.watchers.lang_watch",
     "cogs.watchers.keyword_watch",
-    "cogs.adapters.deviantart",   # feature-flagged in cog if needed
+    # "cogs.adapters.deviantart",  # kikapcsolva
 ]
 
-async def main():
-    load_dotenv()
-    intents = discord.Intents.default()
-    intents.message_content = True
-    bot = commands.Bot(command_prefix="!", intents=intents)
+class Bot(commands.Bot):
+    def __init__(self) -> None:
+        super().__init__(command_prefix="!", intents=INTENTS)
 
-    # Make log mirror to Discord (optional)
-    async def mirror_error_to_channel(msg: str):
+    async def setup_hook(self) -> None:
+        # COG-ok betöltése biztonságosan
+        for ext in EXTENSIONS:
+            try:
+                await self.load_extension(ext)
+                log.info(f"Loaded cog: {ext}")
+            except Exception:
+                log.exception(f"Failed to load {ext}")
+
+        # App parancsok szinkronizálása GUILD-re (instant)
         try:
-            if LOG_CHANNEL_ID:
-                ch = bot.get_channel(LOG_CHANNEL_ID)
-                if ch:
-                    await ch.send(f"```\n{msg[:1800]}\n```")
+            if GUILD_ID:
+                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+                log.info(f"App commands synced to guild {GUILD_ID}")
+            else:
+                await self.tree.sync()
+                log.info("App commands synced (global)")
         except Exception:
-            logger.exception("Failed to mirror log to channel")
+            log.exception("Command sync failed")
 
-    @bot.event
-    async def on_ready():
-        logger.info(f"Logged in as {bot.user}")
+    async def on_ready(self):
+        log.info(f"Logged in as {self.user} ({self.user.id})")
 
-    @bot.event
-    async def on_error(event_method, *args, **kwargs):
-        exc_msg = traceback.format_exc()
-        logger.error(f"on_error in {event_method}: {exc_msg}")
-        await mirror_error_to_channel(exc_msg)
-
-    @bot.event
-    async def on_command_error(ctx, error):
-        logger.error(f"Command error: {error}")
-        await mirror_error_to_channel(f"Command error: {error}\n{traceback.format_exc()}"[:1900])
-        await ctx.reply("Something went wrong. Logged for review.", mention_author=False)
-
-    # Load cogs
-    for ext in COGS_TO_LOAD:
-        try:
-            mod = importlib.import_module(ext)
-            if hasattr(mod, "FEATURE_NAME"):
-                feat = FEATURES.get(mod.FEATURE_NAME, True)
-                if not feat:
-                    logger.info(f"Feature disabled: {ext}")
-                    continue
-            if hasattr(mod, "setup"):
-                await mod.setup(bot)
-                logger.info(f"Loaded cog: {ext}")
-        except Exception as e:
-            logger.exception(f"Failed to load {ext}: {e}")
-            await mirror_error_to_channel(f"Failed to load {ext}: {e}")
-
-    token = os.getenv("DISCORD_TOKEN", "")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN not set")
-    await bot.start(token)
+async def main():
+    bot = Bot()
+    async with bot:
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
+    if not TOKEN:
+        raise SystemExit("DISCORD_TOKEN missing in environment.")
     asyncio.run(main())
