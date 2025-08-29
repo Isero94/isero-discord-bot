@@ -1,261 +1,274 @@
+# cogs/tickets/tickets.py
+from __future__ import annotations
+
 import os
 import asyncio
-from typing import Optional, Iterable
+from typing import List, Tuple, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-FEATURE_NAME = "tickets"
+# ────────────────────────────────────────────────────────────────────────────────
+# Segéd: guild scope (nem trükközzük __func__-kal, import idejében kiértékeljük)
+# ────────────────────────────────────────────────────────────────────────────────
 
-# Kategóriák (gombcímkék) – itt tudsz átnevezni, ha szeretnéd
-CAT_MEBINU = "Mebinu"
-CAT_COMMISSION = "Commission"
-CAT_NSFW = "NSFW 18+"
-CAT_HELP = "General Help"
+def _build_guild_scope_from_env() -> Tuple[discord.Object, ...]:
+    raw = os.getenv("GUILD_ID", "")  # lehet 1 vagy több, pl: "123,456"
+    ids: List[discord.Object] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.append(discord.Object(id=int(part)))
+    return tuple(ids)
 
-# Környezetből beolvasható fixek
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
+GUILD_SCOPE: Tuple[discord.Object, ...] = _build_guild_scope_from_env()
 
-# Szűrők, amikre a cleanup figyel, ha nem csak a szerző = bot szerint törlünk
-HUB_MARKERS: tuple[str, ...] = (
-    "Üdv a(z) #",
-    "TicketHub ready",
-    "Válassz kategóriát a gombokkal",
-    "Hub frissítve",
-)
+def scope_decorator() -> app_commands.Check:
+    """
+    Ha van GUILD_SCOPE, a parancsokat arra a guild(ek)re korlátozzuk,
+    ha nincs, globálisan regisztrálódnak.
+    """
+    if GUILD_SCOPE:
+        return app_commands.guilds(*GUILD_SCOPE)
+    # no-op dekorátor, ha nincs megadva
+    def _noop_decorator(func):
+        return func
+    return _noop_decorator  # type: ignore[return-value]
 
 
-class HubView(discord.ui.View):
-    def __init__(self, who_id: int):
-        super().__init__(timeout=None)
-        self.who_id = who_id  # a hub üzenet írója (bot)
+# ────────────────────────────────────────────────────────────────────────────────
+# Beállítások environmentből
+# ────────────────────────────────────────────────────────────────────────────────
 
-    # Mebinu – primary
-    @discord.ui.button(label=CAT_MEBINU, style=discord.ButtonStyle.primary, custom_id="tickets:mebinu")
-    async def mebinu(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._open_thread(interaction, CAT_MEBINU)
+HUB_CHANNEL_ID_ENV = "TICKET_HUB_CHANNEL_ID"
 
-    # Commission – success (kértél más színt)
-    @discord.ui.button(label=CAT_COMMISSION, style=discord.ButtonStyle.success, custom_id="tickets:commission")
-    async def commission(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._open_thread(interaction, CAT_COMMISSION)
+def _get_hub_channel_id_from_env() -> Optional[int]:
+    val = os.getenv(HUB_CHANNEL_ID_ENV, "").strip()
+    return int(val) if val.isdigit() else None
 
-    # NSFW – danger
-    @discord.ui.button(label=CAT_NSFW, style=discord.ButtonStyle.danger, custom_id="tickets:nsfw")
-    async def nsfw(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._open_thread(interaction, CAT_NSFW)
 
-    # Help – secondary
-    @discord.ui.button(label=CAT_HELP, style=discord.ButtonStyle.secondary, custom_id="tickets:help")
-    async def helpbtn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._open_thread(interaction, CAT_HELP)
+# ────────────────────────────────────────────────────────────────────────────────
+# UI – kategóriagombok
+# ────────────────────────────────────────────────────────────────────────────────
 
-    async def _open_thread(self, interaction: discord.Interaction, category: str):
-        # Thread név: "KATEGÓRIA | DisplayName"
-        user = interaction.user
-        base = f"{category} | {user.display_name}".strip()
-        name = base[:95]  # thread név limit
+CATEGORIES = [
+    ("Mebinu", "MEBINU"),
+    ("Commission", "COMMISSION"),
+    ("NSFW 18+", "NSFW18"),
+    ("General Help", "GENERAL"),
+]
 
-        parent: discord.TextChannel = interaction.channel  # type: ignore
+class CategoryButton(discord.ui.Button):
+    def __init__(self, label: str, code: str, style: discord.ButtonStyle):
+        super().__init__(label=label, style=style)
+        self.code = code
 
-        # Privát thread a hub csatorna alatt
-        try:
-            thread = await parent.create_thread(
-                name=name,
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-            )
-            await thread.add_user(user)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "Nincs jogosultság privát thread létrehozására ebben a csatornában.",
-                ephemeral=True,
-            )
-            return
+    async def callback(self, interaction: discord.Interaction):
+        assert interaction.guild and interaction.channel
 
-        # Üdvözlő üzenet – NINCS „kerek limit” táblázat, ahogy kérted
-        embed = discord.Embed(
-            title=f"{category} ticket",
-            description=(
-                f"Hello {user.mention}! Itt intézzük a **{category}** témádat. "
-                "Írd le röviden, amire szükséged van. Képeket is csatolhatsz."
-            ),
-            color=discord.Color.blurple(),
+        # A thread neve: KATEGÓRIA | DisplayName
+        display = interaction.user.display_name
+        thread_name = f"{self.label.upper()} | {display}"
+
+        # Public thread a hubban
+        parent: discord.TextChannel = interaction.channel  # type: ignore[assignment]
+        thread = await parent.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.public_thread,
+            auto_archive_duration=1440,  # 24h
+            reason=f"Ticket opened by {interaction.user} ({self.code})",
         )
-        await thread.send(embed=embed)
+
+        # Berakunk egy nyitó üzenetet a threadbe
+        open_text = (
+            f"**{self.label}** jegy nyitva.\n"
+            f"Kérlek írd le röviden, miben segíthetünk. "
+            f"Staff hamarosan válaszol. <@{interaction.user.id}>"
+        )
+        await thread.send(open_text)
+
+        # Ephemeral visszajelzés a kattintónak
         await interaction.response.send_message(
-            f"Ticket nyitva: {thread.mention}", ephemeral=True
+            f"Thread megnyitva: {thread.mention}",
+            ephemeral=True
         )
 
+class CategoryView(discord.ui.View):
+    def __init__(self, *, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+        # Színek: kértél másik színt a Commissionre → Primary helyett Success
+        for label, code in CATEGORIES:
+            style = discord.ButtonStyle.primary
+            if code == "COMMISSION":
+                style = discord.ButtonStyle.success
+            elif code == "NSFW18":
+                style = discord.ButtonStyle.danger
+            elif code == "GENERAL":
+                style = discord.ButtonStyle.secondary
+            self.add_item(CategoryButton(label, code, style))
+        # NINCS külön "Details" gomb – mert a dobozban leírjuk a lényeget.
+
+
+# ────────────────────────────────────────────────────────────────────────────────
+# A cog
+# ────────────────────────────────────────────────────────────────────────────────
 
 class Tickets(commands.Cog, name="tickets"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def cog_load(self) -> None:
-        self.bot.logger.info("%s: cog loaded", FEATURE_NAME)
-
-    # ===== Helpers ============================================================
-
-    def _guild_scope(self) -> list[discord.Object]:
-        return [discord.Object(id=GUILD_ID)] if GUILD_ID else []
-
-    def _resolve_hub(self, interaction: discord.Interaction) -> Optional[discord.TextChannel]:
-        if TICKET_HUB_CHANNEL_ID:
-            ch = interaction.client.get_channel(TICKET_HUB_CHANNEL_ID)
+    # ── Segéd: hub csatorna felkutatása
+    def _find_hub_channel_object(
+        self, guild: discord.Guild
+    ) -> Optional[discord.TextChannel]:
+        # 1) env alapján
+        env_id = _get_hub_channel_id_from_env()
+        if env_id:
+            ch = guild.get_channel(env_id)
             if isinstance(ch, discord.TextChannel):
+                return ch  # OK, megtalálva
+
+        # 2) fallback: név alapján keresünk ticket-hub-ot
+        for ch in guild.text_channels:
+            if ch.name == "ticket-hub":
                 return ch
-        # fallback: az a csatorna, ahol épp állunk
-        if isinstance(interaction.channel, discord.TextChannel):
-            return interaction.channel
         return None
 
-    async def _delete_messages(
-        self,
-        channel: discord.TextChannel,
-        *,
-        by_bot_only: bool = True,
-        include_markers: bool = True,
-    ) -> int:
-        """
-        Biztonságos egyenkénti törlés (bulk_delete 14 nap limit miatt nem megbízható).
-        Rate limit barát (~0.25s/sikeres törlés).
-        """
-        deleted = 0
-        me: discord.ClientUser = channel.guild.me or self.bot.user  # type: ignore
-
-        async for msg in channel.history(limit=None, oldest_first=True):
-            try:
-                if by_bot_only:
-                    if msg.author.id != me.id:
-                        continue
-                elif include_markers:
-                    content = (msg.content or "") + " " + (msg.embeds[0].description if msg.embeds else "")
-                    if (msg.author.id == me.id) or any(m in content for m in HUB_MARKERS):
-                        pass
-                    else:
-                        continue
-
-                await msg.delete()
-                deleted += 1
-                await asyncio.sleep(0.25)
-            except discord.Forbidden:
-                continue
-            except discord.HTTPException:
-                # ha rate limit vagy túl régi, folytatjuk
-                await asyncio.sleep(0.5)
-                continue
-
-        return deleted
-
-    async def _delete_threads(self, channel: discord.TextChannel) -> int:
-        """Minden thread törlése a hub alatt (aktív + archív)."""
-        count = 0
-
-        # Aktívak
-        for th in list(channel.threads):
-            try:
-                await th.delete()
-                count += 1
-                await asyncio.sleep(0.25)
-            except Exception:
-                continue
-
-        # Archívak – public
-        async for th in channel.archived_threads(limit=None, private=False):
-            try:
-                await th.delete()
-                count += 1
-                await asyncio.sleep(0.25)
-            except Exception:
-                continue
-
-        # Archívak – private
-        async for th in channel.archived_threads(limit=None, private=True):
-            try:
-                await th.delete()
-                count += 1
-                await asyncio.sleep(0.25)
-            except Exception:
-                continue
-
-        return count
-
-    def _hub_embed(self, channel: discord.TextChannel) -> discord.Embed:
+    # ── Hub doboz
+    def _build_hub_embed(self, channel: discord.TextChannel) -> discord.Embed:
+        title = f"Üdv a(z) #{channel.name} | ticket-hub!-ban!"
         desc = (
-            "Válassz kategóriát a gombokkal. A rendszer külön **privát threadet** nyit neked.\n\n"
-            f"**{CAT_MEBINU}** — Gyűjthető figura kérések, variánsok, kódok, ritkaság.\n"
-            f"**{CAT_COMMISSION}** — Fizetős, egyedi art megbízás *(scope, budget, határidő)*.\n"
-            f"**{CAT_NSFW}** — Csak 18+; szigorúbb szabályzat & review.\n"
-            f"**{CAT_HELP}** — Gyors kérdés–válasz, útmutatás."
+            "Válassz kategóriát a gombokkal. A rendszer külön privát threadet nyit neked.\n\n"
+            "**Mebinu** — Gyűjthető figura kérések, variánsok, kódok, ritkaság.\n"
+            "**Commission** — Fizetős, egyedi art megbízás (scope, budget, határidő).\n"
+            "**NSFW 18+** — Csak 18+; szigorúbb szabályzat & review.\n"
+            "**General Help** — Gyors kérdés–válasz, útmutatás."
         )
-        e = discord.Embed(
-            title=f"Üdv a(z) #{channel.name} | ticket-hub-ban!",
+        emb = discord.Embed(
+            title=title,
             description=desc,
             color=discord.Color.blurple(),
         )
-        e.set_footer(text="Hub frissítve. Törölve: 0 üzenet.")
-        return e
+        emb.set_footer(text="ISERO bot • tickets")
+        return emb
 
-    # ===== Commands ===========================================================
-
-    @app_commands.command(name="ticket_hub_setup", description="TicketHub üzenet újraposztolása (és bot-üzenetek takarítása).")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.guilds(*_guild_scope.__func__(None))  # static-ish hívás
+    # ────────────────────────────────────────────────────────────────────────
+    # /ticket_hub_setup – új doboz kirakása (nem töröl mindent, az a cleanup)
+    # ────────────────────────────────────────────────────────────────────────
+    @scope_decorator()
+    @app_commands.command(
+        name="ticket_hub_setup",
+        description="TicketHub doboz kirakása a hub csatornába.",
+        default_member_permissions=discord.Permissions(manage_guild=True),
+    )
     async def ticket_hub_setup(self, interaction: discord.Interaction):
-        ch = self._resolve_hub(interaction)
-        if not ch:
-            await interaction.response.send_message("Nem találom a hub csatornát.", ephemeral=True)
+        assert interaction.guild is not None
+
+        hub = self._find_hub_channel_object(interaction.guild)
+        if not hub:
+            await interaction.response.send_message(
+                f"Nem találom a hub csatornát. "
+                f"Állítsd be env-ben a `{HUB_CHANNEL_ID_ENV}` változót, vagy nevezd el a csatornát `ticket-hub`-ra.",
+                ephemeral=True,
+            )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        view = CategoryView()
+        embed = self._build_hub_embed(hub)
 
-        # Bot-üzenetek takarítása (gyors, biztonságos)
-        removed = await self._delete_messages(ch, by_bot_only=True, include_markers=True)
-
-        # Friss hub üzenet
-        embed = self._hub_embed(ch)
-        msg = await ch.send(embed=embed, view=HubView(self.bot.user.id))  # type: ignore
-
-        self.bot.logger.info("TicketHub setup done: removed=%s, new_msg_id=%s", removed, msg.id)
-        await interaction.followup.send(
-            f"Hub kész. Törölve: **{removed}** üzenet. Csatorna: {ch.mention}",
-            ephemeral=True,
+        await hub.send(embed=embed, view=view)
+        await interaction.response.send_message(
+            f"✅ Hub frissítve: {hub.mention}",
+            ephemeral=True
         )
 
+    # ────────────────────────────────────────────────────────────────────────
+    # /ticket_hub_cleanup – takarítás (régi bot üzenetek + threadek)
+    # ────────────────────────────────────────────────────────────────────────
+    @scope_decorator()
     @app_commands.command(
         name="ticket_hub_cleanup",
-        description="TicketHub takarítás: bot-üzenetek törlése. 'deep' = thread törlés is.",
+        description="Régi hub üzenetek és bot által nyitott threadek törlése.",
+        default_member_permissions=discord.Permissions(manage_guild=True),
     )
-    @app_commands.describe(deep="Ha igaz, MINDEN thread is törlődik a hub alatt (aktív + archív).")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.guilds(*_guild_scope.__func__(None))
-    async def ticket_hub_cleanup(self, interaction: discord.Interaction, deep: Optional[bool] = False):
-        ch = self._resolve_hub(interaction)
-        if not ch:
-            await interaction.response.send_message("Nem találom a hub csatornát.", ephemeral=True)
+    @app_commands.describe(deep="Ha igaz, a bot által nyitott threadeket is törli.")
+    async def ticket_hub_cleanup(
+        self,
+        interaction: discord.Interaction,
+        deep: bool = True
+    ):
+        assert interaction.guild is not None
+
+        hub = self._find_hub_channel_object(interaction.guild)
+        if not hub:
+            await interaction.response.send_message(
+                f"Nem találom a hub csatornát. "
+                f"Állítsd be env-ben a `{HUB_CHANNEL_ID_ENV}` változót, vagy nevezd el a csatornát `ticket-hub`-ra.",
+                ephemeral=True,
+            )
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Üzenetek törlése (bot + marker alapú)
-        removed_msgs = await self._delete_messages(ch, by_bot_only=False, include_markers=True)
-
+        removed_msgs = 0
         removed_threads = 0
-        if deep:
-            removed_threads = await self._delete_threads(ch)
 
-        self.bot.logger.info(
-            "TicketHub cleanup: removed_msgs=%s removed_threads=%s deep=%s",
-            removed_msgs, removed_threads, deep
-        )
+        # 1) Bot üzenetek törlése a hubból
+        async for msg in hub.history(limit=None, oldest_first=False):
+            try:
+                # bot üzenete, és/vagy hozzávaló komponensek/ember?
+                authored_by_bot = (msg.author.id == self.bot.user.id) if self.bot.user else False
+                looks_like_hub = (
+                    authored_by_bot
+                    or bool(msg.components)
+                    or (msg.embeds and "ticket-hub" in (msg.embeds[0].title or "").lower())
+                    or (isinstance(msg.content, str) and msg.content.lower().startswith("thread opened:"))
+                )
+                if looks_like_hub:
+                    await msg.delete()
+                    removed_msgs += 1
+                    # ne terheljük a ratelimitet
+                    await asyncio.sleep(0.25)
+            except discord.Forbidden:
+                continue
+            except discord.HTTPException:
+                continue
+
+        # 2) Threadek törlése (bot által nyitottak – owner a bot)
+        if deep:
+            # aktív threadek
+            for th in list(hub.threads):
+                try:
+                    if th.owner_id == (self.bot.user.id if self.bot.user else 0):
+                        await th.delete(reason="TicketHub cleanup (active)")
+                        removed_threads += 1
+                        await asyncio.sleep(0.25)
+                except discord.Forbidden:
+                    pass
+                except discord.HTTPException:
+                    pass
+
+            # archív threadek
+            try:
+                async for th in hub.archived_threads(limit=200, private=False):
+                    if th.owner_id == (self.bot.user.id if self.bot.user else 0):
+                        try:
+                            await th.delete(reason="TicketHub cleanup (archived)")
+                            removed_threads += 1
+                            await asyncio.sleep(0.25)
+                        except discord.Forbidden:
+                            pass
+                        except discord.HTTPException:
+                            pass
+            except AttributeError:
+                # régebbi lib esetén nem mindenhol érhető el
+                pass
 
         await interaction.followup.send(
-            f"Takarítás kész. Törölt üzenetek: **{removed_msgs}**."
+            f"✅ Takarítás kész. Törölt üzenetek: **{removed_msgs}**."
             + (f" Törölt threadek: **{removed_threads}**." if deep else ""),
-            ephemeral=True,
+            ephemeral=True
         )
 
 
