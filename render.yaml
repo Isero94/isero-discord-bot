@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: isero-bot
+    env: python
+    plan: starter
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m bot.bot
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
