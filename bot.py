@@ -1,65 +1,69 @@
-import os, asyncio, discord
+import os
+import asyncio
+import discord
 from discord.ext import commands
-from config import DISCORD_TOKEN, GUILD_ID, STAFF_CHANNEL_ID
+from dotenv import load_dotenv
 
+load_dotenv()
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = int(os.getenv("GUILD_ID", "0") or "0")
+STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0") or "0")
+
+# ---- INTENTS: kell a message_content! ----
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-INITIAL_EXTENSIONS = [
-    "cogs.profiles",
-    "cogs.logging",
-    "cogs.moderation",
-    "cogs.agent_gate",
-]
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-class IseroBot(commands.Bot):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.started_at = discord.utils.utcnow()
+async def load_cogs():
+    try:
+        await bot.load_extension("cogs.agent_gate")
+        print("[BOOT] cogs.agent_gate loaded ✅")
+    except Exception as e:
+        print(f"[BOOT] cogs.agent_gate load ERROR: {e}")
 
-    async def setup_hook(self):
-        print(f"[BOOT] ISERO setup_hook started...")
-        # cogs betöltése
-        for ext in INITIAL_EXTENSIONS:
+@bot.event
+async def on_ready():
+    print("=== ISERO ONLINE ===")
+    print(f"[BOOT] Bot user: {bot.user} (id={bot.user.id})")
+    print(f"[BOOT] Guilds: {[g.name for g in bot.guilds]}")
+    print(f"[BOOT] Intents.message_content = {bot.intents.message_content}")
+    # Parancsok sync
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"[BOOT] App commands synced to guild {GUILD_ID}: {len(synced)}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"[BOOT] Global app commands synced: {len(synced)}")
+    except Exception as e:
+        print(f"[BOOT] Command sync ERROR: {e}")
+
+    # Üzenet a staff csatornába
+    if STAFF_CHANNEL_ID:
+        ch = bot.get_channel(STAFF_CHANNEL_ID)
+        if ch:
             try:
-                await self.load_extension(ext)
-                print(f"[BOOT] Loaded {ext}")
-            except Exception as e:
-                print(f"[BOOT] FAILED to load {ext}: {e}")
-
-        # slash parancsok szinkron
-        try:
-            if GUILD_ID:
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                print(f"[BOOT] App commands synced to guild {GUILD_ID}")
-            else:
-                await self.tree.sync()
-                print("[BOOT] Global app commands synced")
-        except Exception as e:
-            print(f"[BOOT] Sync failed: {e}")
-
-        # DEBUG: jelezzen a staff csatornában, hogy él
-        try:
-            if STAFF_CHANNEL_ID:
-                ch = self.get_channel(STAFF_CHANNEL_ID)
-                if ch is None:
-                    ch = await self.fetch_channel(STAFF_CHANNEL_ID)
                 await ch.send("✅ ISERO felállt, hallak titeket.")
-                print(f"[BOOT] Pinged staff channel {STAFF_CHANNEL_ID}")
-            else:
-                print("[BOOT] STAFF_CHANNEL_ID is empty")
-        except Exception as e:
-            print(f"[BOOT] Staff ping failed: {e}")
+            except Exception as e:
+                print(f"[BOOT] Staff notify send ERROR: {e}")
+        else:
+            print(f"[BOOT] Staff channel not found: {STAFF_CHANNEL_ID}")
 
-async def main():
-    token = DISCORD_TOKEN or os.getenv("DISCORD_TOKEN", "")
-    if not token:
-        raise RuntimeError("Missing DISCORD_TOKEN env.")
-    bot = IseroBot(command_prefix=commands.when_mentioned_or("!"), intents=intents, help_command=None)
-    async with bot:
-        await bot.start(token)
+@bot.event
+async def setup_hook():
+    await load_cogs()
+
+# Gyors /ping teszt, hogy biztos lásd: parancsok élnek
+@bot.tree.command(name="ping", description="Gyors életjel teszt.")
+async def ping_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong 🏓", ephemeral=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if not DISCORD_TOKEN:
+        raise SystemExit("DISCORD_TOKEN hiányzik.")
+    bot.run(DISCORD_TOKEN)
