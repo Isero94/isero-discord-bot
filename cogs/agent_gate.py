@@ -36,6 +36,7 @@ print(f"[DEBUG] STAFF_CHANNEL_ID = {STAFF_CHANNEL_ID}")
 print(f"[DEBUG] ALLOW_STAFF_FREESPEECH = {ALLOW_STAFF_FREESPEECH}")
 print(f"[DEBUG] WAKE_WORDS = {WAKE_WORDS}")
 
+# >>> FONTOS: nincs 'proxies' paraméter! (ez okozta a hibát)
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 def short(txt: str, n: int = 300):
@@ -111,10 +112,11 @@ class AgentGate(commands.Cog):
             print("[STAFF] matched staff channel")
             content = (message.content or "").strip()
 
-            # Wakey-wakey
+            # Wakey-wakey (prefix)
             low = content.lower()
             for w in WAKE_WORDS:
-                if low.startswith(w.lower() + " "):
+                wlow = w.lower().strip()
+                if low.startswith(wlow + " "):
                     content = content[len(w):].strip()
                     break
 
@@ -140,6 +142,7 @@ class AgentGate(commands.Cog):
                 if cmd.startswith("/posthub") and message.author.guild_permissions.manage_channels:
                     try:
                         ctx = await self.bot.get_context(message)
+                        # közvetlen hívás (Command callback)
                         await self.posthub.callback(self, ctx)  # type: ignore
                     except Exception as e:
                         await message.channel.send(f"Parancs hívás hiba: {e}")
@@ -154,11 +157,14 @@ class AgentGate(commands.Cog):
             st = states.get(message.channel.id)
             if st and not st.closed and message.author.id == st.user.id:
                 if len(message.content) > TICKET_MSG_CHAR_LIMIT:
-                    await message.reply(f"Kérlek maradj {TICKET_MSG_CHAR_LIMIT} karakternél."); return
+                    await message.reply(f"Kérlek maradj {TICKET_MSG_CHAR_LIMIT} karakternél.")
+                    return
                 st.user_turns += 1
                 st.last_activity = time.time()
                 if st.user_turns > TICKET_USER_MAX_MSG:
-                    await message.reply("Kör limit elérve, összefoglalok."); await self.finish_with_summary(st); return
+                    await message.reply("Kör limit elérve, összefoglalok.")
+                    await self.finish_with_summary(st)
+                    return
 
                 sp = ("You are Isero, a terse but helpful assistant. "
                       "Answer under 300 chars, get to the point.")
@@ -197,7 +203,8 @@ class AgentGate(commands.Cog):
                         "- Max 4 referencia link\n"
                         "Staff hamarosan ránéz. Köszi!"
                     )
-                except Exception: pass
+                except Exception:
+                    pass
                 st.closed = True
 
     # --- /posthub ---
@@ -210,9 +217,11 @@ class AgentGate(commands.Cog):
     @app_commands.command(name="ask", description="Kérdezd az ISERO-t (staff).")
     async def ask(self, interaction: discord.Interaction, prompt: str):
         if STAFF_CHANNEL_ID and interaction.channel_id != STAFF_CHANNEL_ID:
-            await interaction.response.send_message("Használd a staff csatornában.", ephemeral=True); return
+            await interaction.response.send_message("Használd a staff csatornában.", ephemeral=True)
+            return
         if not OPENAI_API_KEY:
-            await interaction.response.send_message("OpenAI key hiányzik.", ephemeral=True); return
+            await interaction.response.send_message("OpenAI key hiányzik.", ephemeral=True)
+            return
         await interaction.response.defer(thinking=True)
         sp = ("You are ISERO, the staff assistant. Answer HU/EN precisely and helpfully.")
         ans = await self.call_openai(prompt, sp)
