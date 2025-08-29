@@ -1,160 +1,95 @@
 import os
-import re
-import asyncio
-from typing import Optional, Callable, Awaitable, List
+from typing import List
 
 import discord
 from discord.ext import commands
 
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
-# Wake-words: első a hivatalos név ("Isero"), de a félregépelést is elfogadjuk.
-WAKE_WORDS = [w.strip().lower() for w in os.getenv("WAKE_WORDS", "isero,issero").split(",")]
-HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
-
+WAKE_WORDS: List[str] = [w.strip().lower() for w in os.getenv("WAKE_WORDS", "Isero,isero").split(",")]
+HUB_CH_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
 
 class AgentGate(commands.Cog):
-    """
-    Természetes nyelvű OWNER gateway.
-    Csak az OWNER_ID-től jövő, wake-wordöt tartalmazó üzenetekre reagál.
-    """
+    """Természetes nyelvű 'Isero' feladatok – ownernek teljes hozzáféréssel."""
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # ------------- belső segédek -------------
+    # --- helper: jogosultság + wake szó felismerés ---
+    def _is_owner(self, user: discord.abc.User) -> bool:
+        return OWNER_ID and user.id == OWNER_ID
 
-    def _has_wake(self, content: str) -> bool:
-        lc = content.lower()
-        return any(w in lc for w in WAKE_WORDS)
+    def _woke(self, content: str) -> bool:
+        c = content.lower()
+        return any(w in c for w in WAKE_WORDS)
 
-    async def _owner_status(self, channel: discord.abc.Messageable) -> None:
-        try:
-            loaded = sorted(self.bot.cogs.keys())
-            ping_ms = int(self.bot.latency * 1000) if self.bot.latency is not None else -1
-            guilds = len(self.bot.guilds)
-            text = (
-                "✅ **Isero státusz**\n"
-                f"- Guilds: **{guilds}**\n"
-                f"- Ping: **{ping_ms} ms**\n"
-                f"- Betöltött cogs: `{', '.join(loaded)}`\n"
-            )
-            await channel.send(text)
-        except Exception as e:
-            await channel.send(f"⚠️ Státusz lekérdezés hiba: `{e}`")
-
-    async def _cleanup_hub(self, channel: discord.abc.Messageable) -> None:
-        # Döntsük el, hol dolgozzunk
-        target_channel: discord.abc.Messageable = channel
-        if HUB_CHANNEL_ID:
-            ch = self.bot.get_channel(HUB_CHANNEL_ID)
-            if ch is None:
-                # fallback: fetch_channel, ha nincs cache-ben
-                try:
-                    ch = await self.bot.fetch_channel(HUB_CHANNEL_ID)
-                except Exception as e:
-                    await channel.send(f"⚠️ Nem érem el a hub csatornát (`{HUB_CHANNEL_ID}`): `{e}`")
-                    return
-            target_channel = ch  # type: ignore[assignment]
-
-        # Töröljük a bot régi hub-posztjait (ahol értelmezett a purge, pl. TextChannel)
-        deleted = 0
-        try:
-            if isinstance(target_channel, discord.TextChannel):
-                def _is_bot(m: discord.Message) -> bool:
-                    return m.author.id == self.bot.user.id if self.bot.user else False
-                purged = await target_channel.purge(limit=100, check=_is_bot)
-                deleted = len(purged)
-            else:
-                # Thread vagy DM esetén egyenként megyünk végig
-                async for m in target_channel.history(limit=50):  # type: ignore[attr-defined]
-                    if self.bot.user and m.author.id == self.bot.user.id:
-                        try:
-                            await m.delete()
-                            deleted += 1
-                            await asyncio.sleep(0.2)
-                        except Exception:
-                            pass
-        except discord.Forbidden:
-            await channel.send("❌ Nincs jogosultságom törölni a hub csatornában.")
-            return
-        except Exception as e:
-            await channel.send(f"⚠️ Törlés közben hiba történt: `{e}`")
-            # nem állunk le, megpróbáljuk kirakni a hubot
-
-        # Hub újrakirakása: megpróbáljuk a Tickets cog publikus metódusait meghívni
+    # --- owner NATURÁL parancsok ---
+    async def _owner_cleanup_and_setup(self, source_message: discord.Message):
+        """Hub takarítás + újraposztolás. Tickets cog metódusait hívja."""
         tickets = self.bot.get_cog("Tickets")
-        posted = False
-        if tickets:
-            candidate_methods: List[str] = [
-                "post_ticket_hub",
-                "post_hub",
-                "setup_hub",
-                "show_hub",
-            ]
-            for name in candidate_methods:
-                func: Optional[Callable[..., Awaitable]] = getattr(tickets, name, None)  # type: ignore[assignment]
-                if callable(func):
-                    try:
-                        await func(target_channel)  # type: ignore[misc]
-                        posted = True
-                        break
-                    except TypeError:
-                        # lehet, hogy nincs paramétere; próbáljuk paraméter nélkül
-                        try:
-                            await func()  # type: ignore[misc]
-                            posted = True
-                            break
-                        except Exception:
-                            continue
-                    except Exception:
-                        continue
+        if not tickets:
+            await source_message.channel.send("Tickets cog nincs betöltve.")
+            return
 
-        if not posted:
-            # Ha nincs publikus metódus, adjunk instrukciót
-            await target_channel.send("ℹ️ Hub üzenet nem posztolható automatikusan. "
-                                      "Futtasd a **/ticket_hub_setup** vagy **/ticket_hub_cleanup** parancsot.")
+        # célcsatorna: env alapján, különben az aktuális csatorna
+        target = self.bot.get_channel(HUB_CH_ID) if HUB_CH_ID else source_message.channel
 
-        await channel.send(f"🧹 Kész. Törölve: **{deleted}** üzenet. "
-                           f"Csatorna: <#{getattr(target_channel, 'id', 0)}>")
+        # vedd elő a két publikus metódust a Tickets-ből
+        cleanup = getattr(tickets, "cleanup_hub_messages", None)
+        posthub = getattr(tickets, "post_hub", None)
 
-    # ------------- eseménykezelő -------------
+        if callable(cleanup) and callable(posthub):
+            deleted = await cleanup(target)
+            await posthub(target)
+            await source_message.channel.send(f"Hub frissítve. Törölve: {deleted} üzenet. Csatorna: {target.mention}")
+        else:
+            # Ha régi tickets.py van, ahol ezek nincsenek, esés vissza
+            await source_message.channel.send(
+                "Hub üzenet nem posztolható automatikusan. "
+                "Futtasd a `/ticket_hub_setup` vagy `/ticket_hub_cleanup` parancsot."
+            )
 
+    async def _owner_status(self, channel: discord.abc.Messageable):
+        guilds = len(self.bot.guilds)
+        users = sum(g.member_count or 0 for g in self.bot.guilds)
+        await channel.send(f"**Isero státusz**: guilds={guilds}, members~={users}")
+
+    # --- üzenet figyelő ---
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # ne reagáljon a saját és más botok üzenetére
         if message.author.bot:
             return
-        # csak az OWNER
-        if message.author.id != OWNER_ID:
+        if not message.guild:
             return
-        # DM-ben és guildben is működjön
+
         content = message.content.strip()
         if not content:
             return
-        if not self._has_wake(content):
+
+        # csak OWNER – teljes hozzáférés
+        if not self._is_owner(message.author):
             return
 
-        lc = content.lower()
+        # “Isero …” jellegű kérések
+        if self._woke(content):
 
-        # egyszerű intentek
-        if re.search(r"\bstatus\b|\bstátusz\b", lc):
-            await self._owner_status(message.channel)
-            return
+            # takarítás + újraposztolás kulcsszavak
+            if any(k in content.lower() for k in [
+                "takarítsd a hubot",
+                "cleanup hub",
+                "hub cleanup",
+                "hub setup",
+                "frissítsd a hubot",
+            ]):
+                await self._owner_cleanup_and_setup(message)
+                return
 
-        if "takarítsd" in lc and "hub" in lc:
-            await self._cleanup_hub(message.channel)
-            return
-        if "cleanup" in lc and "hub" in lc:
-            await self._cleanup_hub(message.channel)
-            return
+            # státusz
+            if any(k in content.lower() for k in ["status", "státusz", "állapot"]):
+                await self._owner_status(message.channel)
+                return
 
-        # help
-        await message.channel.send(
-            "👋 **Isero** itt. Parancsok:\n"
-            "• `Isero status` – állapotjelentés\n"
-            "• `Isero takarítsd a hubot` – ticket-hub rendberakás"
-        )
-
+            # ha ide jutunk, default válasz (ne legyen csend)
+            await message.channel.send("Parancs értve. Mondd: *takarítsd a hubot* vagy *status*.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AgentGate(bot))
