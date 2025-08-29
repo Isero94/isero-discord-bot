@@ -7,7 +7,7 @@ BAD_WORDS = [
     "fuck","shit","bitch","asshole","bastard","cunt","dick","pussy","faggot","moron","retard",
     "kurva","geci","fasz","picsa","segg","buzi","köcsög","szar","hülye"
 ]
-BAD_RE = re.compile(r"\b(" + "|".join(re.escape(w) for w in BAD_WORDS) + r")\b", re.IGNORECASE)
+BAD_RE = re.compile(r"\\b(" + "|".join(re.escape(w) for w in BAD_WORDS) + r")\\b", re.IGNORECASE)
 
 MUTE_ROLE_NAME = "Muted"
 
@@ -34,6 +34,7 @@ async def temp_mute(member, seconds: int, reason: str):
     except Exception as e:
         print(f"[moderation] add role failed: {e}")
         return
+
     async def unmute_later():
         await asyncio.sleep(seconds)
         try:
@@ -46,7 +47,7 @@ class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.Cog.listener()
+    @commands.Cog.listener())
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
@@ -54,10 +55,9 @@ class Moderation(commands.Cog):
         content = message.content or ""
         prof = await Profiles.get_profile(message.guild.id, message.author.id)
 
-        # NOTE: No language nagging. Hungarian and English are both fine,
-        # and we won't DM people about language usage.
+        # Nyelvi figyelmeztetés: KIKAPCSOLVA
 
-        # Swear word logic with a tolerance of 2 per message
+        # Káromkodás tolerancia: üzenetenként 2 szóig oké
         bads = len(BAD_RE.findall(content))
         excess = max(0, bads - 2)
         stage = prof.get("stage") or 0
@@ -80,8 +80,9 @@ class Moderation(commands.Cog):
                 if total >= 1:
                     stage = 3
                     action = ("perma", None, "Stage 3: Permanent mute")
-        
-        await Profiles.update_profile(message.guild.id, message.author.id, stage=stage, swear_excess=total, last_msg_ts=time.time())
+
+        await Profiles.update_profile(message.guild.id, message.author.id,
+                                      stage=stage, swear_excess=total, last_msg_ts=time.time())
 
         if action:
             kind, seconds, reason = action
