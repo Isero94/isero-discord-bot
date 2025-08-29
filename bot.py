@@ -3,10 +3,9 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# --- load .env (Render env vars also work) ---
 load_dotenv()
 
-TOKEN   = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0") or 0)
 
 intents = discord.Intents.default()
@@ -19,11 +18,13 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def setup_hook():
     print("[BOOT] setup_hook")
-    try:
-        await bot.load_extension("cogs.agent_gate")
-        print("[BOOT] cogs.agent_gate loaded ✅")
-    except Exception as e:
-        print(f"[BOOT] cogs.agent_gate load ERROR: {e}")
+    # COG-ok betöltése
+    for ext in ("cogs.agent_gate", "cogs.tickets"):
+        try:
+            await bot.load_extension(ext)
+            print(f"[BOOT] {ext} loaded ✅")
+        except Exception as e:
+            print(f"[BOOT] {ext} load ERROR: {e}")
 
 @bot.event
 async def on_ready():
@@ -32,7 +33,7 @@ async def on_ready():
     print(f"[BOOT] Guilds: {[g.name for g in bot.guilds]}")
     print(f"[BOOT] intents.message_content = {bot.intents.message_content}")
 
-    # Sync slash commands (fast per-guild if GUILD_ID provided)
+    # gyorsabb guild-specifikus sync, ha van GUILD_ID
     try:
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -44,7 +45,7 @@ async def on_ready():
     except Exception as e:
         print(f"[BOOT] app commands sync error: {e}")
 
-# Simple health check
+# egyszerű életjel parancs
 @bot.hybrid_command(name="ping", description="Pong teszt")
 async def ping(ctx: commands.Context):
     await ctx.reply("Pong 🏓")
