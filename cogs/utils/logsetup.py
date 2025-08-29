@@ -1,17 +1,20 @@
-FEATURE_NAME = "logging"
-
+import logging
 from discord.ext import commands
-from loguru import logger
-import sys, os, pathlib
 
-LOG_DIR = pathlib.Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_FORMAT = "%(levelname)s:%(name)s:%(message)s"
 
-# Configure Loguru
-logger.remove()
-logger.add(sys.stdout, level="INFO", backtrace=False, diagnose=False, enqueue=True)
-logger.add(LOG_DIR / "bot.log", rotation="5 MB", retention=3, level="DEBUG", enqueue=True)
+class LogSetup(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        # Alap logging
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
-async def setup(bot):
-    # not a real cog; just ensures logging is configured before others
-    pass
+        # A discord.client loggerét lejjebb vesszük, hogy a PyNaCl WARNING ne zavarjon
+        logging.getLogger("discord.client").setLevel(logging.ERROR)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        logging.getLogger("bot").info("LogSetup ready.")
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(LogSetup(bot))
