@@ -1,202 +1,153 @@
-import os
-import logging
-from typing import Optional, List
+from __future__ import annotations
 
+import os
+import typing as t
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-log = logging.getLogger("bot")
+FEATURE_NAME = "ticket_hub"  # ezzel azonosítjuk a hub üzeneteket (embed footer)
 
-FEATURE_NAME = "tickets"
-
-# ---- ENV ----
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
-ARCHIVES_CHANNEL_ID = int(os.getenv("ARCHIVES_CHANNEL_ID", "0"))  # opcionális
-
-# ---- Kategóriák (fix 4) ----
-CATS = [
-    ("Mebinu", "mebinu"),
-    ("Commission", "commission"),
-    ("NSFW 18+", "nsfw"),
-    ("General Help", "general"),
-]
-
-DETAILS_TEXT = (
-    "**Mebinu** — Collectible figure requests, variants, codes, rarity.\n"
-    "**Commission** — Paid custom art request; scope, budget, deadline.\n"
-    "**NSFW 18+** — 18+ submissions; stricter policy & review.\n"
-    "**General Help** — Quick Q&A and guidance."
+HUB_TITLE = "Üdv a(z) #🧾 | ticket-hub-ban!"
+HUB_DESC = (
+    "Válassz kategóriát a gombokkal. A rendszer külön privát threadet nyit neked.\n\n"
+    "**Mebinu** — Gyűjthető figura kérések, variánsok, kódok, ritkaság.\n"
+    "**Commission** — Fizetős, egyedi art megbízás (scope, budget, határidő).\n"
+    "**NSFW 18+** — Csak 18+; szigorúbb szabályzat & review.\n"
+    "**General Help** — Gyors kérdés–válasz, útmutatás.\n"
 )
 
+CAT_MEBINU = "MEBINU"
+CAT_COMM = "COMMISSION"
+CAT_NSFW = "NSFW18"
+CAT_HELP = "HELP"
 
-# ----------------- PERSISTENT HUB VIEW -----------------
-class CategoryButton(discord.ui.Button):
-    def __init__(self, label: str, key: str):
-        super().__init__(
-            style=discord.ButtonStyle.primary,
-            label=label,
-            custom_id=f"ticket_cat_{key}",
-        )
-        self.key = key
+def footer_text() -> str:
+    return f"{FEATURE_NAME}"
 
-    async def callback(self, interaction: discord.Interaction):
-        if self.key == "nsfw":
-            view = AgeGateView(self.key)
-            await interaction.response.send_message(
-                "This ticket is **18+**. Please confirm your age to continue.",
-                view=view,
-                ephemeral=True,
-            )
+# ---------------- UI: View + Gombok ----------------
+
+class StartTicketButton(discord.ui.Button):
+    def __init__(self, label: str, style: discord.ButtonStyle, cat_key: str):
+        super().__init__(label=label, style=style)
+        self.cat_key = cat_key
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        await interaction.response.defer(ephemeral=True)
+
+        hub_ch = interaction.channel
+        if not isinstance(hub_ch, (discord.TextChannel, discord.Thread)):
+            await interaction.followup.send("Ez itt nem támogatott csatornatípus.", ephemeral=True)
             return
 
-        await open_ticket_thread(interaction, self.key)
+        user = interaction.user
+        name = f"{self.cat_key} | {user.display_name}".strip()
+        # Privát thread a hub csatorna alatt
+        try:
+            thread = await hub_ch.create_thread(
+                name=name[:90],
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+                reason="Ticket thread"
+            )
+        except Exception:
+            # ha thread nem engedélyezett, fallback: sima nyilvános thread
+            thread = await hub_ch.create_thread(
+                name=name[:90],
+                type=discord.ChannelType.public_thread,
+                reason="Ticket thread (fallback)"
+            )
 
+        # behívjuk a felhasználót a threadbe
+        try:
+            await thread.add_user(user)
+        except Exception:
+            pass
+
+        # első üzenet
+        await thread.send(
+            f"Opened pre-chat for **{self.cat_key}**.\n"
+            "Each message must be ≤ **300** characters. Up to **10** rounds (you ↔ Isero)."
+        )
+        await interaction.followup.send(f"Thread opened: {thread.mention}", ephemeral=True)
 
 class DetailsButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(
-            style=discord.ButtonStyle.secondary,
-            label="Details",
-            custom_id="ticket_details",
-        )
+        super().__init__(label="Details", style=discord.ButtonStyle.secondary)
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(DETAILS_TEXT, ephemeral=True)
-
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        await interaction.response.send_message(HUB_DESC, ephemeral=True)
 
 class TicketHubView(discord.ui.View):
-    """Fő (persistent) gombsor a #ticket-hub üzeneten."""
-    def __init__(self):
-        super().__init__(timeout=None)  # persistent
-        for label, key in CATS:
-            self.add_item(CategoryButton(label, key))
+    def __init__(self, *, timeout: t.Optional[float] = None):
+        super().__init__(timeout=timeout)
+        self.add_item(StartTicketButton("Mebinu", discord.ButtonStyle.primary, CAT_MEBINU))
+        self.add_item(StartTicketButton("Commission", discord.ButtonStyle.primary, CAT_COMM))
+        self.add_item(StartTicketButton("NSFW 18+", discord.ButtonStyle.danger, CAT_NSFW))
+        self.add_item(StartTicketButton("General Help", discord.ButtonStyle.success, CAT_HELP))
         self.add_item(DetailsButton())
 
+# ---------------- COG ----------------
 
-# ----------------- 18+ KAPU -----------------
-class AgeConfirmButton(discord.ui.Button):
-    def __init__(self, key: str):
-        super().__init__(
-            style=discord.ButtonStyle.success,
-            label="I'm 18+",
-            custom_id=f"age_yes_{key}",
-        )
-        self.key = key
-
-    async def callback(self, interaction: discord.Interaction):
-        await open_ticket_thread(interaction, self.key)
-
-
-class AgeCancelButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(style=discord.ButtonStyle.danger, label="Cancel", custom_id="age_no")
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="Cancelled.", view=None)
-
-
-class AgeGateView(discord.ui.View):
-    def __init__(self, key: str):
-        super().__init__(timeout=120)
-        self.add_item(AgeConfirmButton(key))
-        self.add_item(AgeCancelButton())
-
-
-# ----------------- KÖZÖS FUNKCIÓ -----------------
-async def open_ticket_thread(interaction: discord.Interaction, key: str):
-    """Thread nyitása + első üzenet (a limit szöveget nem mutatjuk)."""
-    channel = interaction.channel
-    user = interaction.user
-
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "This command works only in a text channel.", ephemeral=True
-        )
-        return
-
-    starter = await channel.send("Thread opened.")
-    th = await starter.create_thread(
-        name=f"{key.upper()} | {user.display_name}",
-        auto_archive_duration=1440,
-    )
-    await th.send(
-        f"Opened pre-chat for **{key.upper()}**.\n"
-        f"Hi {user.mention}! Tell me the essentials and we'll take it from there."
-    )
-    try:
-        await th.add_user(user)
-    except Exception:
-        pass
-
-    await interaction.response.send_message(f"Thread created: {th.mention}", ephemeral=True)
-
-    if ARCHIVES_CHANNEL_ID:
-        try:
-            ach = interaction.client.get_channel(ARCHIVES_CHANNEL_ID)
-            if isinstance(ach, discord.TextChannel):
-                await ach.send(f"Thread opened: {th.mention} — by {user.mention}")
-        except Exception as e:
-            log.warning("Archive notify failed: %r", e)
-
-
-# ----------------- SEGÉDFÜGGVÉNYEK: AI/ADMIN IS HÍVNI TUDJA -----------------
-async def post_ticket_hub(channel: discord.TextChannel) -> discord.Message:
-    """Új TicketHub üzenet kirakása megadott csatornába."""
-    msg = await channel.send("TicketHub ready. Click to start.", view=TicketHubView())
-    log.info("[tickets] New TicketHub message posted in #%s", channel.name)
-    return msg
-
-
-async def cleanup_ticket_hub(channel: discord.TextChannel) -> int:
-    """Bot által küldött régi hub-üzenetek törlése a csatornában. Visszaad: törölt darabszám."""
-    deleted = 0
-    async for m in channel.history(limit=200):
-        if m.author == channel.guild.me and (
-            "TicketHub ready" in (m.content or "") or any(m.components)
-        ):
-            try:
-                await m.delete()
-                deleted += 1
-            except Exception:
-                pass
-    log.info("[tickets] Cleanup in #%s removed %d message(s).", channel.name, deleted)
-    return deleted
-
-
-# ----------------- COG -----------------
 class Tickets(commands.Cog):
-    def __init__(self, bot: commands.Bot):
+    """Ticket Hub + takarítás + posztolás (slash és programból is hívható)."""
+
+    def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    async def cog_load(self):
-        self.bot.add_view(TicketHubView())  # restart után is éljen
-        log.info("[%s] Persistent TicketHub view registered.", FEATURE_NAME)
+    # ---------- PUBLIKUS METÓDUSOK (Agent is ezeket hívja) ----------
 
-    @app_commands.command(name="ticket_hub", description="Post a fresh Ticket Hub block.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def ticket_hub(self, interaction: discord.Interaction):
-        if TICKET_HUB_CHANNEL_ID and interaction.channel_id != TICKET_HUB_CHANNEL_ID:
-            await interaction.response.send_message(
-                "Please run this in the configured Ticket Hub channel.", ephemeral=True
-            ); return
-        await interaction.response.defer(ephemeral=True)
-        msg = await post_ticket_hub(interaction.channel)  # type: ignore
-        await interaction.followup.send(f"TicketHub posted: {msg.jump_url}", ephemeral=True)
+    async def cleanup_hub_messages(self, channel: discord.abc.Messageable, limit: int = 100) -> int:
+        """Törli a korábbi hub üzeneteket egy csatornában. Visszaadja a törölt darabszámot."""
+        deleted = 0
 
-    @app_commands.command(
-        name="ticket_hub_cleanup",
-        description="Delete recent Ticket Hub bot messages in this channel.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
+        # Csak TextChannel/Thread history-ja iterálható
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return 0
+
+        async for msg in channel.history(limit=limit):
+            if msg.author == channel.guild.me and msg.embeds:
+                for e in msg.embeds:
+                    f = e.footer.text if e.footer else ""
+                    if f and FEATURE_NAME in f:
+                        try:
+                            await msg.delete()
+                            deleted += 1
+                        except Exception:
+                            pass
+                        break
+        return deleted
+
+    async def post_hub(self, channel: discord.abc.Messageable) -> None:
+        """Kiteszi az aktuális hub üzenetet gombokkal."""
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return
+
+        emb = discord.Embed(
+            title=HUB_TITLE,
+            description=HUB_DESC,
+            color=discord.Color.gold(),
+        )
+        emb.set_footer(text=footer_text())
+
+        view = TicketHubView()
+        await channel.send(embed=emb, view=view)
+
+    # ---------- SLASH PARANCSOK ----------
+
+    @app_commands.command(name="ticket_hub_cleanup", description="Régi TicketHub üzenetek törlése a jelenlegi csatornában.")
+    @app_commands.checks.has_permissions(manage_messages=True)
     async def ticket_hub_cleanup(self, interaction: discord.Interaction):
-        if not isinstance(interaction.channel, discord.TextChannel):
-            await interaction.response.send_message("Works only in a text channel.", ephemeral=True); return
         await interaction.response.defer(ephemeral=True)
-        deleted = await cleanup_ticket_hub(interaction.channel)
-        await interaction.followup.send(f"Cleanup done. Deleted: **{deleted}** message(s).", ephemeral=True)
+        deleted = await self.cleanup_hub_messages(interaction.channel)  # type: ignore[arg-type]
+        await interaction.followup.send(f"Kész. Törölve: **{deleted}** üzenet.", ephemeral=True)
 
+    @app_commands.command(name="ticket_hub_setup", description="TicketHub újraposztolása a jelenlegi csatornába.")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def ticket_hub_setup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        await self.post_hub(interaction.channel)  # type: ignore[arg-type]
+        await interaction.followup.send("Hub kiposztolva.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tickets(bot))
