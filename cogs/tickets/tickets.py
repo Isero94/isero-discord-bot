@@ -1,7 +1,6 @@
 FEATURE_NAME = "ticket_hub"
 
 import discord
-import asyncio
 from typing import Optional, List, Dict
 
 from discord.ext import commands
@@ -10,7 +9,7 @@ from loguru import logger
 from bot.config import (
     CATEGORIES, PRECHAT_TURNS, PRECHAT_MSG_CHAR_LIMIT,
     TICKET_TEXT_MAXLEN, TICKET_IMG_MAX, NSFW_AGEGATE_REQUIRED,
-    TICKET_HUB_CHANNEL_ID, ARCHIVES_CHANNEL_ID
+    TICKET_HUB_CHANNEL_ID, ARCHIVES_CHANNEL_ID, GUILD_ID,
 )
 from cogs.utils.ai import short_reply
 
@@ -47,45 +46,48 @@ class StartTicketButton(discord.ui.Button):
         super().__init__(label="Start ticket", style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(view=CategoryView(), ephemeral=True)
+        await interaction.response.send_message(view=CategorySelectView(), ephemeral=True)
 
-class CategoryView(discord.ui.View):
+class CategorySelectView(discord.ui.View):
+    """Dropdown megoldás leírásokkal (Discordon nincs 'hover tooltip'),
+    ezért a Select opciók 'description' mezőjét használjuk 'buboréknak'."""
     def __init__(self):
-        super().__init__(timeout=120)
-        for label in CATEGORIES:
-            key = label.lower().split()[0]  # "Mebinu"->mebinu, "NSFW 18+"->nsfw
-            key = "nsfw" if "nsfw" in key else key
-            self.add_item(CategoryButton(label=label, key=key))
-        self.add_item(DetailsButton())
+        super().__init__(timeout=180)
+        self.add_item(CategorySelect())
 
-class DetailsButton(discord.ui.Button):
+class CategorySelect(discord.ui.Select):
     def __init__(self):
-        super().__init__(label="Details", style=discord.ButtonStyle.secondary)
+        options = [
+            discord.SelectOption(
+                label="Mebinu", value="mebinu",
+                description="Collectible figure requests, variants, codes, rarity."
+            ),
+            discord.SelectOption(
+                label="Commission", value="commission",
+                description="Paid custom art request; scope, budget, deadline."
+            ),
+            discord.SelectOption(
+                label="NSFW 18+", value="nsfw",
+                description="18+ commissions; stricter policy & review."
+            ),
+            discord.SelectOption(
+                label="General Help", value="general",
+                description="Quick Q&A and guidance."
+            ),
+        ]
+        super().__init__(placeholder="Choose ticket type…", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        desc = {
-            "Mebinu": "Collectible figure requests, variants, codes, rarity.",
-            "Commission": "Paid custom art request; scope, budget, deadline.",
-            "NSFW 18+": "18+ commissions; stricter policy & review.",
-            "General Help": "Quick Q&A and guidance.",
-        }
-        lines = [f"**{k}** — {v}" for k, v in desc.items()]
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-class CategoryButton(discord.ui.Button):
-    def __init__(self, label: str, key: str):
-        super().__init__(label=label, style=discord.ButtonStyle.secondary)
-        self.key = key  # mebinu|commission|nsfw|general
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.key == "nsfw" and NSFW_AGEGATE_REQUIRED:
+        key = self.values[0]
+        if key == "nsfw" and NSFW_AGEGATE_REQUIRED:
             await interaction.response.send_message(
                 "Please confirm you are 18+ to proceed.",
                 view=AgeGateView(),
-                ephemeral=True
+                ephemeral=True,
             )
             return
-        await open_prechat_thread(interaction, self.key)
+        # előrelépés közvetlenül
+        await open_prechat_thread(interaction, key)
 
 class AgeGateView(discord.ui.View):
     def __init__(self):
@@ -99,9 +101,15 @@ class AgeConfirmButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await open_prechat_thread(interaction, "nsfw", age_ok=True)
 
+class OpenThreadLinkView(discord.ui.View):
+    def __init__(self, url: str):
+        super().__init__(timeout=60)
+        # Link-button a szál megnyitásához egy kattintással
+        self.add_item(discord.ui.Button(label="Open thread", style=discord.ButtonStyle.link, url=url))
+
 # ---- Helpers ----
 async def open_prechat_thread(interaction: discord.Interaction, key: str, age_ok: bool = False):
-    # Create thread in configured hub channel (fallback: current channel)
+    # thread létrehozása a hub csatornában (fallback: aktuális)
     parent = interaction.client.get_channel(TICKET_HUB_CHANNEL_ID) or interaction.channel
     th = await parent.create_thread(name=f"{key.upper()} | {interaction.user.display_name}")
     st = TicketState(thread=th, user=interaction.user, cat_key=key)
@@ -109,13 +117,24 @@ async def open_prechat_thread(interaction: discord.Interaction, key: str, age_ok
         st.age_ok = age_ok
     states[th.id] = st
 
-    # >>> A KORÁBBI HIBA ITT VOLT: lezáratlan f-string. Javítva. <<<
-    await th.send(
-        f"Opened pre-chat for **{key.upper()}**.\n"
-        f"Each message must be ≤ {PRECHAT_MSG_CHAR_LIMIT} characters. "
-        f"Up to {PRECHAT_TURNS} rounds (you ↔ Isero)."
-    )
-    await interaction.response.send_message(f"Thread opened: {th.mention}", ephemeral=True)
+    # KÉRÉSED SZERINT: nincs több "300 char / 10 kör" kiírás. Csendben érvényesítjük.
+    await th.send(f"Welcome, {interaction.user.mention}! Briefly tell me what you need and key requirements.")
+
+    # Ephemeral gyorslink a szálhoz (Discord kliensbe nem tudunk automatikusan átnavigálni)
+    guild_id = GUILD_ID or (interaction.guild.id if interaction.guild else 0)
+    thread_url = f"https://discord.com/channels/{guild_id}/{th.id}"
+    try:
+        await interaction.response.send_message(
+            f"Thread opened: {th.mention}",
+            view=OpenThreadLinkView(url=thread_url),
+            ephemeral=True,
+        )
+    except discord.InteractionResponded:
+        await interaction.followup.send(
+            f"Thread opened: {th.mention}",
+            view=OpenThreadLinkView(url=thread_url),
+            ephemeral=True,
+        )
 
 class Tickets(commands.Cog):
     def __init__(self, bot):
@@ -128,7 +147,7 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Only watch thread messages with an active state
+        # Csak aktív ticket-szálban figyelünk
         if message.author.bot:
             return
         channel = message.channel
@@ -138,22 +157,22 @@ class Tickets(commands.Cog):
         if not st or st.closed:
             return
         if message.author.id != st.user.id:
-            return  # only count user's pre-chat messages
+            return  # csak a felhasználó üzeneteit számoljuk
 
-        # Enforce 300-char limit for user messages
+        # 300 karakter limit csendben, de túlcsordulásnál visszajelzünk
         if len(message.content) > PRECHAT_MSG_CHAR_LIMIT:
             await message.reply(f"Please keep messages ≤ {PRECHAT_MSG_CHAR_LIMIT} characters.")
             return
 
-        # Count user turn
+        # Felhasználói kör +1
         st.user_turns += 1
 
-        # Isero reply (clamped)
+        # ISERO válasz (AI, 300 char clamp)
         reply = await short_reply(message.content, max_chars=PRECHAT_MSG_CHAR_LIMIT)
         await channel.send(reply[:PRECHAT_MSG_CHAR_LIMIT])
         st.agent_turns += 1
 
-        # Check limit
+        # Limit elérése → döntés
         if st.user_turns >= PRECHAT_TURNS or st.agent_turns >= PRECHAT_TURNS:
             await channel.send(
                 "We reached the pre-chat limit. Let's finalize your commission.",
@@ -163,7 +182,7 @@ class Tickets(commands.Cog):
 
 class DecisionView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         self.add_item(WriteSelfButton())
         self.add_item(WriteIseroButton())
 
@@ -187,7 +206,7 @@ class WriteIseroButton(discord.ui.Button):
         if not st:
             await interaction.response.send_message("No ticket state found.", ephemeral=True)
             return
-        # Aggregate last ~5 user messages as draft (simple baseline)
+        # utolsó ~5 user üzenet egyszerű összefűzése
         history: List[str] = []
         async for m in th.history(limit=20):
             if m.author.id == st.user.id:
@@ -235,7 +254,7 @@ class CommissionModal(discord.ui.Modal, title="Commission"):
 
 class RefsView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.add_item(AttachRefsButton())
         self.add_item(SkipRefsButton())
         self.add_item(SubmitButton())
@@ -279,7 +298,7 @@ class SubmitButton(discord.ui.Button):
             await interaction.response.send_message("Missing text. Please write or let Isero draft.", ephemeral=True)
             return
 
-        # Collect image attachments from recent messages
+        # Kép-URL-ek gyűjtése
         urls: List[str] = []
         async for m in th.history(limit=50):
             for a in m.attachments:
@@ -290,7 +309,7 @@ class SubmitButton(discord.ui.Button):
         st.attachments = urls
         st.closed = True
 
-        # Send summary to archives channel if configured
+        # Összefoglaló archiválása
         out = (
             f"**Category:** {st.cat_key.upper()}\n"
             f"**User:** {st.user.mention} ({st.user.id})\n"
