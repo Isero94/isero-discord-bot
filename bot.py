@@ -1,9 +1,6 @@
 import os, asyncio, discord
 from discord.ext import commands
-from dotenv import load_dotenv
-from config import DISCORD_TOKEN, GUILD_ID
-
-load_dotenv()
+from config import DISCORD_TOKEN, GUILD_ID, STAFF_CHANNEL_ID
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -24,12 +21,15 @@ class IseroBot(commands.Bot):
 
     async def setup_hook(self):
         print(f"[BOOT] ISERO setup_hook started...")
+        # cogs betöltése
         for ext in INITIAL_EXTENSIONS:
             try:
                 await self.load_extension(ext)
                 print(f"[BOOT] Loaded {ext}")
             except Exception as e:
                 print(f"[BOOT] FAILED to load {ext}: {e}")
+
+        # slash parancsok szinkron
         try:
             if GUILD_ID:
                 await self.tree.sync(guild=discord.Object(id=GUILD_ID))
@@ -40,9 +40,18 @@ class IseroBot(commands.Bot):
         except Exception as e:
             print(f"[BOOT] Sync failed: {e}")
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        print(f"✅ ISERO online: {self.user} ({self.user.id})")
+        # DEBUG: jelezzen a staff csatornában, hogy él
+        try:
+            if STAFF_CHANNEL_ID:
+                ch = self.get_channel(STAFF_CHANNEL_ID)
+                if ch is None:
+                    ch = await self.fetch_channel(STAFF_CHANNEL_ID)
+                await ch.send("✅ ISERO felállt, hallak titeket.")
+                print(f"[BOOT] Pinged staff channel {STAFF_CHANNEL_ID}")
+            else:
+                print("[BOOT] STAFF_CHANNEL_ID is empty")
+        except Exception as e:
+            print(f"[BOOT] Staff ping failed: {e}")
 
 async def main():
     token = DISCORD_TOKEN or os.getenv("DISCORD_TOKEN", "")
