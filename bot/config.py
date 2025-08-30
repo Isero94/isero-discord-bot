@@ -1,42 +1,47 @@
+# config.py
 import os
-from dataclasses import dataclass
+from typing import Optional, List
 
-# Canonical category labels (single source of truth)
-CATEGORIES = ["Mebinu", "Commission", "NSFW 18+", "General Help"]
+def _csv(name: str) -> List[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    out = []
+    for p in raw.split(","):
+        p = p.strip()
+        if p and p.isdigit():
+            out.append(int(p))
+    return out
 
-# Channels (extend with new names/IDs at any time)
-GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
-STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0")) or None
-TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0")) or None
-ARCHIVES_CHANNEL_ID = int(os.getenv("ARCHIVES_CHANNEL_ID", "0")) or None
-LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "0")) or None
+def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    try:
+        return int(str(v).strip())
+    except ValueError:
+        return default
 
-# Limits (env-overridable)
-PRECHAT_TURNS = int(os.getenv("PRECHAT_TURNS", "10"))
-PRECHAT_MSG_CHAR_LIMIT = int(os.getenv("PRECHAT_MSG_CHAR_LIMIT", "300"))
-TICKET_TEXT_MAXLEN = int(os.getenv("TICKET_TEXT_MAXLEN", "800"))
-TICKET_IMG_MAX = int(os.getenv("TICKET_IMG_MAX", "4"))
+OPENAI_API_KEY         = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL_BASE      = os.getenv("OPENAI_MODEL_BASE", "gpt-4o-mini")
+OPENAI_MODEL_HEAVY     = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
+OPENAI_DAILY_TOKENS    = _env_int("OPENAI_DAILY_TOKENS", 20000)
 
-# Feature flags
-FEATURES = {
-    "ticket_hub": os.getenv("FEATURE_TICKET_HUB", "true").lower() == "true",
-    "ranks": os.getenv("FEATURE_RANKS", "true").lower() == "true",
-    "staff_assistant": os.getenv("FEATURE_STAFF_ASSISTANT", "true").lower() == "true",
-    "public_assistant": os.getenv("FEATURE_PUBLIC_ASSISTANT", "true").lower() == "true",
-    "guardian": os.getenv("FEATURE_GUARDIAN", "true").lower() == "true",
-    "deviantart": os.getenv("FEATURE_DEVIANTART", "false").lower() == "true",
-}
+# Agent működés
+AGENT_REPLY_COOLDOWN   = _env_int("AGENT_REPLY_COOLDOWN_SEC", 15)
+AGENT_ALLOWED_CHANNELS = _csv("AGENT_ALLOWED_CHANNELS")
+FIRST10_USER_IDS       = _csv("FIRST10_USER_IDS")
 
-# OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Profanity + szabályok
+PROFANITY_FREE_WORDS   = _env_int("PROFANITY_FREE_WORDS", 2)
+PROFANITY_STAGE1       = _env_int("PROFANITY_STAGE1_POINTS", 5)
+PROFANITY_STAGE2       = _env_int("PROFANITY_STAGE2_POINTS", 3)
+PROFANITY_STAGE3       = _env_int("PROFANITY_STAGE3_POINTS", 2)
 
-# NSFW policy
-NSFW_AGEGATE_REQUIRED = True
+# DB
+DATABASE_URL           = os.getenv("DATABASE_URL", "")
 
-@dataclass(frozen=True)
-class Limits:
-    PRECHAT_TURNS: int = PRECHAT_TURNS
-    PRECHAT_MSG_CHAR_LIMIT: int = PRECHAT_MSG_CHAR_LIMIT
-    TICKET_TEXT_MAXLEN: int = TICKET_TEXT_MAXLEN
-    TICKET_IMG_MAX: int = TICKET_IMG_MAX
+# Discord
+GUILD_ID               = _env_int("GUILD_ID")
+OWNER_ID               = _env_int("OWNER_ID")
+ALLOW_STAFF_FREESPEECH = os.getenv("ALLOW_STAFF_FREESPEECH", "false").lower() == "true"
