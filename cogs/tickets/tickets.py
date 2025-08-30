@@ -1,14 +1,20 @@
+# cogs/tickets/tickets.py
+
 import os
 import re
 import time
 import asyncio
+import logging
 import typing as T
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+log = logging.getLogger(__name__)
+
 # ------- Helpers: env ints safely -------
+
 def _env_int(name: str) -> int | None:
     val = os.getenv(name, "").strip()
     if not val:
@@ -18,10 +24,24 @@ def _env_int(name: str) -> int | None:
     except ValueError:
         return None
 
+def _env_csv_ints(name: str) -> list[int]:
+    raw = os.getenv(name, "") or ""
+    out: list[int] = []
+    for part in raw.replace(" ", "").split(","):
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            pass
+    return out
+
+
 TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID")
 TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID")
 ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
-STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
+STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")                 # optional
+STAFF_EXTRA_ROLE_IDS  = _env_csv_ints("STAFF_EXTRA_ROLE_IDS")     # optional (vesszővel elválasztva)
 TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
 
 # channel topic marker
@@ -108,7 +128,7 @@ class TicketsCog(commands.Cog):
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
-        self.log = commands.logger  # uses discord.ext logger
+        log.info("[Tickets] cog ready (persistent views added)")
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
@@ -178,10 +198,18 @@ class TicketsCog(commands.Cog):
                 attach_files=True, embed_links=True
             ),
         }
+        # main staff role
         if STAFF_ROLE_ID:
             role = guild.get_role(STAFF_ROLE_ID)
             if role:
                 overwrites[role] = discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+                )
+        # extra staff roles
+        for rid in STAFF_EXTRA_ROLE_IDS:
+            extra = guild.get_role(rid)
+            if extra and extra not in overwrites:
+                overwrites[extra] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
 
