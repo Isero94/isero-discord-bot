@@ -1,4 +1,3 @@
-# cogs/tickets/tickets.py
 import os
 import re
 import time
@@ -57,16 +56,17 @@ class CategoryView(discord.ui.View):
         super().__init__(timeout=180)
         self.cog = cog
 
-    # CHANGED → colored buttons (primary)
+    # ➜ Mebinu = PRIMARY (blurple)
     @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.primary)
     async def mebinu(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "mebinu")
 
-    # CHANGED → colored buttons (primary)
-    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary)
+    # ➜ Commission = SECONDARY (gray)
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.secondary)
     async def commission(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "commission")
 
+    # ➜ NSFW = DANGER (red)
     @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger)
     async def nsfw(self, i: discord.Interaction, _: discord.ui.Button):
         # ask 18+ confirmation
@@ -76,6 +76,7 @@ class CategoryView(discord.ui.View):
             ephemeral=True
         )
 
+    # ➜ General Help = SUCCESS (green)
     @discord.ui.button(label="General Help", style=discord.ButtonStyle.success)
     async def general_help(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "general-help")
@@ -111,17 +112,17 @@ class TicketsCog(commands.Cog):
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
+        # no logger usage needed; keep simple & safe
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
         e = discord.Embed(title="Ticket Hub")
         e.description = (
-            "Nyomd meg az **Open Ticket** gombot. A következő lépésben kategóriát választasz.\n"
-            "A kategóriaválasztás ezután jön (ephemeral)."
+            "Press the **Open Ticket** button. In the next step you'll choose a category.\n"
+            "Category selection comes next (ephemeral)."
         )
         return e
 
-    # CHANGED → English bubble text
     def category_embed(self) -> discord.Embed:
         e = discord.Embed(title="Choose a category:")
         e.description = (
@@ -137,8 +138,8 @@ class TicketsCog(commands.Cog):
         e = discord.Embed(title=title)
         e.description = (
             f"Hello {user.mention}! Please describe your request briefly.\n"
-            "A moderator will be with you shortly.\n\n"
-            "*Use the button below to close the ticket when finished.*"
+            "A moderator will reply shortly.\n\n"
+            "*Use the button to close the ticket when you're done.*"
         )
         return e
 
@@ -239,7 +240,7 @@ class TicketsCog(commands.Cog):
         # lock channel
         try:
             ow = ch.overwrites_for(guild.default_role)
-            ow.view_channel = True  # remain visible
+            ow.view_channel = True  # keep visible in archive
             ow.send_messages = False
             await ch.set_permissions(guild.default_role, overwrite=ow)
         except discord.Forbidden:
