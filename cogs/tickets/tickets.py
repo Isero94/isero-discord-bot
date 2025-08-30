@@ -1,20 +1,15 @@
 # cogs/tickets/tickets.py
-
 import os
 import re
 import time
 import asyncio
-import logging
 import typing as T
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-log = logging.getLogger(__name__)
-
 # ------- Helpers: env ints safely -------
-
 def _env_int(name: str) -> int | None:
     val = os.getenv(name, "").strip()
     if not val:
@@ -24,24 +19,10 @@ def _env_int(name: str) -> int | None:
     except ValueError:
         return None
 
-def _env_csv_ints(name: str) -> list[int]:
-    raw = os.getenv(name, "") or ""
-    out: list[int] = []
-    for part in raw.replace(" ", "").split(","):
-        if not part:
-            continue
-        try:
-            out.append(int(part))
-        except ValueError:
-            pass
-    return out
-
-
 TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID")
 TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID")
 ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
-STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")                 # optional
-STAFF_EXTRA_ROLE_IDS  = _env_csv_ints("STAFF_EXTRA_ROLE_IDS")     # optional (vesszővel elválasztva)
+STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
 TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
 
 # channel topic marker
@@ -76,11 +57,13 @@ class CategoryView(discord.ui.View):
         super().__init__(timeout=180)
         self.cog = cog
 
-    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary)
+    # CHANGED → colored buttons (primary)
+    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.primary)
     async def mebinu(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "mebinu")
 
-    @discord.ui.button(label="Commission", style=discord.ButtonStyle.secondary)
+    # CHANGED → colored buttons (primary)
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary)
     async def commission(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "commission")
 
@@ -128,7 +111,6 @@ class TicketsCog(commands.Cog):
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
-        log.info("[Tickets] cog ready (persistent views added)")
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
@@ -139,13 +121,14 @@ class TicketsCog(commands.Cog):
         )
         return e
 
+    # CHANGED → English bubble text
     def category_embed(self) -> discord.Embed:
-        e = discord.Embed(title="Válassz kategóriát:")
+        e = discord.Embed(title="Choose a category:")
         e.description = (
-            "**• Mebinu** — gyűjthető figurák\n"
-            "**• Commission** — fizetős egyedi munka\n"
-            "**• NSFW 18+** — felnőtt tartalom (megerősítés szükséges)\n"
-            "**• General Help** — gyors Q&A és útmutatás"
+            "**• Mebinu** — collectible figures: requests, variants, codes, rarity\n"
+            "**• Commission** — paid custom work: scope, budget, deadline\n"
+            "**• NSFW 18+** — adult content (confirmation required)\n"
+            "**• General Help** — quick Q&A and guidance"
         )
         return e
 
@@ -153,9 +136,9 @@ class TicketsCog(commands.Cog):
         title = f"Welcome — {kind.replace('-', ' ').title()}"
         e = discord.Embed(title=title)
         e.description = (
-            f"Hello {user.mention}! Írd le röviden a kérésed.\n"
-            "Egy moderátor hamarosan válaszol.\n\n"
-            "*A ticket zárásához használd a gombot.*"
+            f"Hello {user.mention}! Please describe your request briefly.\n"
+            "A moderator will be with you shortly.\n\n"
+            "*Use the button below to close the ticket when finished.*"
         )
         return e
 
@@ -198,18 +181,10 @@ class TicketsCog(commands.Cog):
                 attach_files=True, embed_links=True
             ),
         }
-        # main staff role
         if STAFF_ROLE_ID:
             role = guild.get_role(STAFF_ROLE_ID)
             if role:
                 overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-                )
-        # extra staff roles
-        for rid in STAFF_EXTRA_ROLE_IDS:
-            extra = guild.get_role(rid)
-            if extra and extra not in overwrites:
-                overwrites[extra] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 )
 
@@ -264,7 +239,7 @@ class TicketsCog(commands.Cog):
         # lock channel
         try:
             ow = ch.overwrites_for(guild.default_role)
-            ow.view_channel = True  # látható maradhat
+            ow.view_channel = True  # remain visible
             ow.send_messages = False
             await ch.set_permissions(guild.default_role, overwrite=ow)
         except discord.Forbidden:
@@ -278,8 +253,6 @@ class TicketsCog(commands.Cog):
     async def ticket_hub_setup(self, i: discord.Interaction):
         await i.response.defer(ephemeral=True)
         channel = T.cast(discord.TextChannel, i.channel)
-
-        # if env set and different, you can also choose that channel; here just post where command is used
         await channel.send(embed=self.hub_embed(), view=OpenTicketView(self))
         await i.followup.send("Ticket Hub posted.", ephemeral=True)
 
