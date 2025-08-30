@@ -59,7 +59,13 @@ GUILD_ID: Optional[int] = _env_int("GUILD_ID")
 OWNER_ID: Optional[int] = _env_int("OWNER_ID")
 
 OPENAI_API_KEY: str = _env_str("OPENAI_API_KEY")
+
+# A fő csevegő modell neve. (Pl.: "gpt-4o-mini")
 OPENAI_MODEL: str = _env_str("OPENAI_MODEL", "gpt-4o-mini")
+
+# NÉV, AMIT AZ AGENT KÓD VÁR:
+# Ha nincs külön megadva, ugyanaz, mint az OPENAI_MODEL.
+OPENAI_MODEL_BASE: str = _env_str("OPENAI_MODEL_BASE", OPENAI_MODEL)
 
 # Agent napi token limit (összes userre, durva sapka)
 AGENT_DAILY_TOKEN_LIMIT: int = _env_int("AGENT_DAILY_TOKEN_LIMIT", 20000) or 20000
@@ -100,5 +106,5 @@ SENTIMENT_POS_PROMO_HINT: float = float(_env_str("SENTIMENT_POS_PROMO_HINT", "0.
 
 # Kényelmi csomag OpenAI híváshoz (ha a kód így várja)
 OPENAI_DEFAULT_ARGS = {
-    "model": OPENAI_MODEL,
+    "model": OPENAI_MODEL_BASE,
 }
