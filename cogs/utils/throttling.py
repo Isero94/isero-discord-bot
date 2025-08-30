@@ -1,13 +1,20 @@
+# cogs/utils/throttling.py
 import time
+from typing import Dict
 
-class Cooldown:
-    def __init__(self, seconds: float):
-        self.seconds = seconds
-        self._last = 0.0
+class Throttle:
+    def __init__(self):
+        self._last: Dict[str, float] = {}
 
-    def ready(self) -> bool:
+    def remaining(self, key: str, cooldown_sec: int) -> int:
         now = time.time()
-        if now - self._last >= self.seconds:
-            self._last = now
-            return True
-        return False
+        t = self._last.get(key, 0.0)
+        left = int(cooldown_sec - (now - t))
+        return left if left > 0 else 0
+
+    def allow(self, key: str, cooldown_sec: int) -> bool:
+        left = self.remaining(key, cooldown_sec)
+        if left > 0:
+            return False
+        self._last[key] = time.time()
+        return True
