@@ -1,142 +1,170 @@
-import os
+# cogs/agent/agent_gate.py
 import asyncio
-import logging
-import typing as T
+import math
+from datetime import datetime, timezone
+from typing import Optional, Tuple
 
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
+from openai import OpenAI
 
-log = logging.getLogger("isero.agent")
-
-# ---- env helpers ------------------------------------------------------------
-def _env_list(name: str, sep: str = ",") -> list[str]:
-    raw = os.getenv(name, "") or ""
-    return [x.strip() for x in raw.split(sep) if x.strip()]
-
-def _env_str(name: str, default: str = "") -> str:
-    v = os.getenv(name)
-    return v if v is not None and str(v).strip() != "" else default
-
-def _is_ticket_channel(ch: discord.abc.GuildChannel | None) -> bool:
-    if isinstance(ch, discord.TextChannel):
-        topic = ch.topic or ""
-        return "owner:" in topic  # a tickets cog ilyen markert tesz
-    return False
-
-# ---- reply-want detector ----------------------------------------------------
-def _wants_agent_reply(message: discord.Message, me: discord.Member | discord.ClientUser,
-                       wake_words: list[str]) -> bool:
-    """Döntsük el, hogy az ügynök válaszoljon-e erre az üzenetre."""
-    # explicit mention
-    try:
-        if isinstance(me, (discord.Member, discord.ClientUser)) and me.mentioned_in(message):
-            return True
-    except Exception:
-        # nagyon konzervatívan: ha valamiért a fenti bedőlne, nézzük a mentions listát
-        if isinstance(me, (discord.Member, discord.ClientUser)):
-            if any(getattr(u, "id", 0) == getattr(me, "id", -1) for u in message.mentions):
-                return True
-
-    # wake words (elején)
-    content = (message.content or "").strip().lower()
-    for w in wake_words:
-        w = w.lower()
-        if not w:
-            continue
-        if content.startswith(w + " ") or content == w or content.startswith(w + ",") or content.startswith(w + ":"):
-            return True
-
-    # jegycsatornában válaszolunk akkor is, ha nincs trigger (kényelmi ok)
-    if _is_ticket_channel(message.channel):
-        return True
-
-    return False
-
-# ---- persona ----------------------------------------------------------------
-SYSTEM_PERSONA = (
-    "You are ISERO, a helpful Discord assistant for the ISERO server. "
-    "Speak concisely, be friendly, and keep context to the current channel. "
-    "If a request involves moderation or private info, act carefully and ask clarifying questions. "
-    "Answer in the language of the user. If the message is short like 'hello', greet and ask how to help."
+from config import (
+    OPENAI_API_KEY, OPENAI_MODEL_BASE, OPENAI_MODEL_HEAVY, OPENAI_DAILY_TOKENS,
+    AGENT_REPLY_COOLDOWN, AGENT_ALLOWED_CHANNELS, FIRST10_USER_IDS,
+    GUILD_ID, OWNER_ID
 )
+from storage.playercard import PlayerCardStore, PlayerCard
+from cogs.utils.throttling import Throttle
+from cogs.agent.policy import build_system_prompt
 
-# ---- the Cog ----------------------------------------------------------------
+def _estimate_tokens(text: str) -> int:
+    # fallback, kb. 4 char/token
+    return max(1, math.ceil(len(text) / 4))
+
 class AgentGate(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else OpenAI()
+        self._throttle = Throttle()
+        self._global_tokens_today = 0
+        self._guild_name_cache: Optional[str] = None
 
-        api_key = _env_str("OPENAI_API_KEY")
-        self.model = _env_str("OPENAI_MODEL", "gpt-4o-mini")
-        self.daily_token_limit = int(_env_str("AGENT_DAILY_TOKENS", "20000") or "20000")
-        self.wake_words = _env_list("WAKE_WORDS") or ["isero", "ai"]
+    async def cog_load(self):
+        # attach store a bot-ra, hogy a watcherek is megtalálják
+        self.bot.pc_store = PlayerCardStore
 
-        # OpenAI kliens (async)
-        self.ai = AsyncOpenAI(api_key=api_key) if api_key else None
+    # -------- belső döntés ----------
+    def _allowed_channel(self, ch: discord.abc.GuildChannel) -> bool:
+        if not AGENT_ALLOWED_CHANNELS:
+            return True
+        return getattr(ch, "id", None) in AGENT_ALLOWED_CHANNELS
 
-        # nagyon egyszerű throttling (per process)
-        self._last_reply_per_user: dict[int, float] = {}
+    def _is_ticket(self, ch: discord.abc.GuildChannel) -> bool:
+        n = (getattr(ch, "name", "") or "").lower()
+        return n.endswith("-tiq") or "ticket" in n
 
-        log.info("[AgentGate] ready. Model=%s, Limit/24h=%s tokens", self.model, self.daily_token_limit)
-
-    # --- kis helper, hogy a bot beszélhet-e itt ------------------------------
-    def _can_talk_here(self, ch: discord.abc.GuildChannel) -> bool:
-        if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+    def _should_reply(self, message: discord.Message) -> bool:
+        if message.author.bot or not message.guild:
             return False
-        perms = ch.permissions_for(ch.guild.me)  # type: ignore
-        return perms.send_messages and perms.read_messages
+        if not self._allowed_channel(message.channel):
+            return False
+        me = message.guild.me
+        if me and message.mentions and me in message.mentions:
+            return True
+        if self._is_ticket(message.channel):
+            return True
+        return False
 
-    # --- fő üzenetfigyelő ----------------------------------------------------
+    def _choose_model(self, card: PlayerCard) -> Tuple[str, int]:
+        # default
+        model = OPENAI_MODEL_BASE
+        max_tokens = 300
+
+        # owner vagy high marketing: próbálj heavy-t, ha van keret
+        if (card.flags.get("owner") or card.marketing_score >= 60) and self._global_tokens_today < int(OPENAI_DAILY_TOKENS * 0.7):
+            model = OPENAI_MODEL_HEAVY
+            max_tokens = 420
+
+        # ha nagyon fogy a keret, kurtíts
+        if self._global_tokens_today > int(OPENAI_DAILY_TOKENS * 0.9):
+            max_tokens = 150
+            model = OPENAI_MODEL_BASE
+        return model, max_tokens
+
+    # -------- OpenAI hívás ----------
+    async def _ask(self, card: PlayerCard, message: discord.Message) -> Optional[str]:
+        in_ticket = self._is_ticket(message.channel)
+        sys = build_system_prompt(card, in_ticket, self._guild_name_cache)
+        user = message.content.strip()
+
+        model, max_tokens = self._choose_model(card)
+
+        resp = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role":"system","content": sys},
+                {"role":"user","content": user}
+            ],
+            temperature=0.6,
+            max_tokens=max_tokens,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        # token számítás
+        used = 0
+        try:
+            used = int(resp.usage.total_tokens)  # type: ignore[attr-defined]
+        except Exception:
+            used = _estimate_tokens(user) + _estimate_tokens(text)
+
+        self._global_tokens_today += used
+        await PlayerCardStore.bump_tokens(message.author.id, used)
+        return text
+
+    # -------- események ----------
+    @commands.Cog.listener()
+    async def on_ready(self):
+        try:
+            if GUILD_ID:
+                g = self.bot.get_guild(GUILD_ID)
+                if g:
+                    self._guild_name_cache = g.name
+        except Exception:
+            pass
+        self.bot.logger.info("[AgentGate] ready. Model=%s, Limit/24h=%s tokens", OPENAI_MODEL_BASE, OPENAI_DAILY_TOKENS)  # type: ignore
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # alap szűrők
-        if message.author.bot:
-            return
-        if not message.guild:
-            return
-        if not self.ai:
-            return
-        me = message.guild.me  # discord.Member
-
-        # csak akkor, ha beszélhetünk, és tényleg akar tőlünk választ
-        if not self._can_talk_here(message.channel):  # type: ignore
-            return
-        if not _wants_agent_reply(message, me, self.wake_words):  # <-- itt volt a hiba korábban
+        if not self._should_reply(message):
             return
 
-        # nagyon light flood-védelem felhasználóra
-        now = asyncio.get_event_loop().time()
-        last = self._last_reply_per_user.get(message.author.id, 0.0)
-        if (now - last) < 2.0:  # 2 mp
+        # cooldown per-user
+        key = f"agent:{message.author.id}"
+        left = self._throttle.remaining(key, AGENT_REPLY_COOLDOWN)
+        if left > 0:
+            # udvarias jelzés ticketben
+            if self._is_ticket(message.channel):
+                try:
+                    await message.channel.send(f"Please wait **{left}s** before I answer again.", delete_after=5)
+                except Exception:
+                    pass
             return
-        self._last_reply_per_user[message.author.id] = now
+        self._throttle.allow(key, AGENT_REPLY_COOLDOWN)
+
+        # napi globális limit
+        if self._global_tokens_today >= OPENAI_DAILY_TOKENS:
+            try:
+                await message.channel.send("Daily AI budget is used up. I’ll be back after reset. ⏳")
+            except Exception:
+                pass
+            return
+
+        # player card betöltése
+        card = await PlayerCardStore.get_card(message.author.id)
+
+        # owner / first10 jelzés
+        if message.author.id == OWNER_ID:
+            card.flags["owner"] = True
+        if message.author.id in FIRST10_USER_IDS:
+            card.first10 = True
+
+        # hívás
+        try:
+            reply = await self._ask(card, message)
+        except Exception as e:
+            try:
+                await message.channel.send("Agent error while thinking. Please try again. 🧯")
+            except Exception:
+                pass
+            self.bot.logger.exception("Agent error: %s", e)  # type: ignore
+            return
+
+        if not reply:
+            return
 
         try:
-            await self._answer(message)
-        except Exception as e:
-            log.exception("Agent reply failed: %s", e)
-
-    # --- válaszgenerálás -----------------------------------------------------
-    async def _answer(self, message: discord.Message):
-        content = message.content or ""
-        user_name = getattr(message.author, "display_name", message.author.name)
-
-        msgs = [
-            {"role": "system", "content": SYSTEM_PERSONA},
-            {"role": "user", "content": f"{user_name}: {content}".strip()},
-        ]
-
-        # kis aktivitás jelzés
-        async with message.channel.typing():  # type: ignore
-            resp = await self.ai.chat.completions.create(
-                model=self.model,
-                messages=msgs,
-                temperature=0.6,
-            )
-        reply = (resp.choices[0].message.content or "").strip()
-
-        if reply:
-            await message.reply(reply, mention_author=False)
+            await message.channel.send(reply)
+        except discord.Forbidden:
+            pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AgentGate(bot))
