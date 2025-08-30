@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import os
 import asyncio
-import datetime as dt
 import logging
+from datetime import datetime as dt
 from typing import Optional, Literal
 
 import discord
@@ -13,277 +13,268 @@ from discord.ext import commands
 
 log = logging.getLogger(__name__)
 
-# --- Env / config ------------------------------------------------------------
-
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))              # e.g. 1409931599629385840
+# ---- Env / config -----------------------------------------------------------
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))                 # e.g. 1409931599629385840
 TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))                 # optional; used for owner-bypass
 
-# --- UI strings (English) ----------------------------------------------------
-
+# ---- UI text (English) ------------------------------------------------------
 PANEL_TITLE = "Ticket Hub"
 PANEL_DESCRIPTION = (
     "Press **Open Ticket** to start. In the next step you'll choose a category:\n\n"
     "• **Mebinu** — Collectible figures: requests, variants, codes, rarity.\n"
     "• **Commission** — Paid custom art: scope, budget, deadline.\n"
-    "• **NSFW 18+** — Adults only; stricter rules and review.\n"
+    "• **NSFW 18+** — Adults only; stricter rules & review.\n"
     "• **General Help** — Quick Q&A and guidance.\n"
 )
 
 WELCOME_TEXT = {
-    "mebinu": "Welcome! This private thread is for Mebinu (collectibles). Please describe your request.",
-    "commission": "Welcome! This private thread is for **Commission** work. Please share scope, budget and deadline.",
-    "nsfw": "Welcome! This private thread is for **NSFW (18+)** topics. Follow the server rules strictly.",
-    "general": "Welcome! This private thread is for **General Help**. Tell us what you need.",
+    "mebinu": (
+        "Welcome! This private thread is for **Mebinu (collectibles)**. "
+        "Please describe your request."
+    ),
+    "commission": (
+        "Welcome! This private thread is for **Commission** work. "
+        "Please share **scope**, **budget**, and **deadline**."
+    ),
+    "nsfw": (
+        "Welcome! This private thread is for **NSFW (18+)** topics. "
+        "Follow the server rules strictly."
+    ),
+    "general": (
+        "Welcome! This private thread is for **General Help**. "
+        "Tell us what you need."
+    ),
 }
 
 THREAD_PREFIX = {
     "mebinu": "MEBINU",
     "commission": "COMMISSION",
-    "nsfw": "NSFW",
+    "nsfw": "NSFW18",
     "general": "HELP",
 }
 
-# --- Views -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+
+def _is_owner_or_mgr(inter: discord.Interaction) -> bool:
+    if OWNER_ID and inter.user.id == OWNER_ID:
+        return True
+    perms = getattr(inter.user, "guild_permissions", None)
+    return bool(perms and perms.manage_guild)
+
+
+def _guild_scope():
+    # guilds() decorator wants discord.Object
+    return [discord.Object(id=GUILD_ID)] if GUILD_ID else []
+
 
 class OpenTicketView(discord.ui.View):
-    """Persistent view for the public hub panel (only 'Open Ticket')."""
-
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(
-            discord.ui.Button(
-                label="Open Ticket",
-                style=discord.ButtonStyle.primary,
-                custom_id="tickets:open",
-            )
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="hub:open")
+    async def open(self, inter: discord.Interaction, button: discord.ui.Button):
+        # Ephemeral category panel only for the clicking user
+        embed = discord.Embed(
+            title="Choose a category",
+            description=PANEL_DESCRIPTION,
+            color=discord.Color.blurple(),
         )
+        await inter.response.send_message(embed=embed, view=CategoryView(), ephemeral=True)
+
 
 class CategoryView(discord.ui.View):
-    """Ephemeral category picker with short description (embed above)."""
     def __init__(self):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
 
-    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary, custom_id="tickets:cat:mebinu")
-    async def mebinu(self, interaction: discord.Interaction, _):
-        await Tickets.open_thread_from_button(interaction, "mebinu")
+    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary, custom_id="cat:mebinu")
+    async def mebinu(self, inter: discord.Interaction, button: discord.ui.Button):
+        await Tickets.create_ticket_thread(inter, "mebinu")
 
-    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary, custom_id="tickets:cat:commission")
-    async def commission(self, interaction: discord.Interaction, _):
-        await Tickets.open_thread_from_button(interaction, "commission")
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary, custom_id="cat:commission")
+    async def commission(self, inter: discord.Interaction, button: discord.ui.Button):
+        await Tickets.create_ticket_thread(inter, "commission")
 
-    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger, custom_id="tickets:cat:nsfw")
-    async def nsfw(self, interaction: discord.Interaction, _):
-        await interaction.response.send_message(
-            "Are you **18 or older**?",
-            view=NSFWConfirmView(),
+    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger, custom_id="cat:nsfw")
+    async def nsfw(self, inter: discord.Interaction, button: discord.ui.Button):
+        # Age-gate confirm first
+        view = AgeGateView()
+        embed = discord.Embed(
+            title="NSFW 18+ Confirmation",
+            description="This area is **18+ only**. Are you **18 or older**?",
+            color=discord.Color.red(),
+        )
+        await inter.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success, custom_id="cat:general")
+    async def general(self, inter: discord.Interaction, button: discord.ui.Button):
+        await Tickets.create_ticket_thread(inter, "general")
+
+
+class AgeGateView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.value: Optional[bool] = None
+
+    @discord.ui.button(label="Yes, I'm 18+", style=discord.ButtonStyle.danger, custom_id="age:yes")
+    async def yes(self, inter: discord.Interaction, button: discord.ui.Button):
+        # Defer so we can create thread then edit ephemeral
+        await inter.response.defer(ephemeral=True, thinking=True)
+        await Tickets.create_ticket_thread(inter, "nsfw", responded=False)
+        await inter.edit_original_response(content="NSFW ticket created.", view=None)
+        self.value = True
+        self.stop()
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="age:no")
+    async def no(self, inter: discord.Interaction, button: discord.ui.Button):
+        await inter.response.send_message("Understood. NSFW ticket was **not** created.", ephemeral=True)
+        self.value = False
+        self.stop()
+
+
+class Tickets(commands.Cog, name="tickets"):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    # ----------------- Hub setup -----------------
+    @app_commands.guilds(*_guild_scope())
+    @app_commands.command(name="ticket_hub_setup", description="Place the Ticket Hub card in this channel.")
+    async def ticket_hub_setup(self, inter: discord.Interaction):
+        if not _is_owner_or_mgr(inter):
+            return await inter.response.send_message(
+                "You need **Manage Server** (or be the owner) to run this.", ephemeral=True
+            )
+
+        if inter.channel_id != TICKET_HUB_CHANNEL_ID:
+            return await inter.response.send_message(
+                "This command can only be used in the configured **ticket-hub** channel.",
+                ephemeral=True,
+            )
+
+        embed = discord.Embed(title=PANEL_TITLE, description="Click the button below to open a ticket.\n"
+                               "You'll choose your category in the next step.",
+                              color=discord.Color.brand_green())
+        embed.set_footer(text="ticket_hub")
+
+        view = OpenTicketView()
+        await inter.response.send_message(embed=embed, view=view)
+        log.info("Ticket Hub card placed by %s", inter.user)
+
+    # ----------------- Local cleanup (hub only) -----------------
+    @app_commands.guilds(*_guild_scope())
+    @app_commands.describe(deep="Also remove ticket threads created by the bot.")
+    @app_commands.command(name="ticket_hub_cleanup", description="Clean the Ticket Hub channel (local only).")
+    async def ticket_hub_cleanup(self, inter: discord.Interaction, deep: Optional[bool] = False):
+        if not _is_owner_or_mgr(inter):
+            return await inter.response.send_message(
+                "You need **Manage Server** (or be the owner) to run this.", ephemeral=True
+            )
+
+        if inter.channel_id != TICKET_HUB_CHANNEL_ID:
+            return await inter.response.send_message(
+                "Cleanup works **only** in the Ticket Hub channel.", ephemeral=True
+            )
+
+        ch = inter.channel
+        assert isinstance(ch, discord.TextChannel)
+
+        await inter.response.defer(ephemeral=True, thinking=True)
+
+        removed = 0
+        # Purge only messages from the bot itself (and only here).
+        def _is_bot(m: discord.Message) -> bool:
+            return m.author == inter.client.user
+
+        try:
+            # purge ignores >14 days; that's Discord limitation and OK here
+            removed = await ch.purge(limit=None, check=_is_bot, bulk=True)
+        except Exception as e:
+            log.warning("Purge warning: %s", e)
+
+        removed_threads = 0
+        if deep:
+            # Only threads created by the bot and with our known prefixes
+            valid_prefixes = tuple(f"{p} |" for p in THREAD_PREFIX.values())
+
+            async for thread in ch.threads:  # active threads
+                pass  # property, not async iterator
+
+            for th in list(ch.threads) + list(ch.archived_threads()):
+                try:
+                    # creator check
+                    if th.owner_id != inter.client.user.id:
+                        continue
+                    if not any(th.name.startswith(pref) for pref in valid_prefixes):
+                        continue
+                    await th.delete(reason="ticket_hub_cleanup deep")
+                    removed_threads += 1
+                    await asyncio.sleep(0.4)  # be gentle with rate limits
+                except Exception as e:
+                    log.warning("Thread delete failed for %s: %s", th, e)
+
+        await inter.followup.send(
+            f"Cleanup done.\n• Deleted messages: **{removed}**\n• Deleted threads: **{removed_threads}**",
             ephemeral=True,
         )
 
-    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success, custom_id="tickets:cat:general")
-    async def general(self, interaction: discord.Interaction, _):
-        await Tickets.open_thread_from_button(interaction, "general")
-
-class NSFWConfirmView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.button(label="Yes, I'm 18+", style=discord.ButtonStyle.danger, custom_id="tickets:nsfw:yes")
-    async def yes(self, interaction: discord.Interaction, _):
-        await Tickets.open_thread_from_button(interaction, "nsfw")
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="tickets:nsfw:no")
-    async def no(self, interaction: discord.Interaction, _):
-        await interaction.response.edit_message(content="NSFW ticket cancelled.", view=None)
-
-# --- Cog ---------------------------------------------------------------------
-
-class Tickets(commands.Cog, name="tickets"):
-    """Ticket Hub cog – English UI, hub-local cleanup, NSFW age-gate."""
-
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        bot.add_view(OpenTicketView())  # persistent
-
-    # Helpers -----------------------------------------------------------------
-
+    # ----------------- Thread creation helper -----------------
     @staticmethod
-    def _hub_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
-        ch = guild.get_channel(TICKET_HUB_CHANNEL_ID)
-        return ch if isinstance(ch, discord.TextChannel) else None
-
-    @staticmethod
-    async def _ensure_reply(interaction: discord.Interaction):
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=False)
-
-    @staticmethod
-    async def open_thread_from_button(
-        interaction: discord.Interaction,
-        category: Literal["mebinu", "commission", "nsfw", "general"],
+    async def create_ticket_thread(
+        inter: discord.Interaction,
+        kind: Literal["mebinu", "commission", "nsfw", "general"],
+        responded: bool = True,
     ):
-        await Tickets._ensure_reply(interaction)
+        """Creates a private thread in the hub channel and seeds it with a welcome message."""
+        hub = inter.guild.get_channel(TICKET_HUB_CHANNEL_ID) if inter.guild else None
+        if not isinstance(hub, discord.TextChannel):
+            msg = "Ticket Hub channel is not configured or not a text channel."
+            if responded:
+                return await inter.response.send_message(msg, ephemeral=True)
+            else:
+                await inter.followup.send(msg, ephemeral=True)
+                return
 
-        guild = interaction.guild
-        user = interaction.user
-        if not guild:
-            await interaction.followup.send("This can only be used in a server.", ephemeral=True)
-            return
+        prefix = THREAD_PREFIX[kind]
+        user = inter.user
+        # Thread name: PREFIX | DisplayName
+        name = f"{prefix} | {getattr(user, 'display_name', user.name)}"
 
-        hub = Tickets._hub_channel(guild)
-        if not hub:
-            await interaction.followup.send("Ticket hub channel is not configured or missing.", ephemeral=True)
-            return
-
-        thread_name = f"{THREAD_PREFIX[category]} | {user.display_name}"
-        try_types = [discord.ChannelType.private_thread, discord.ChannelType.public_thread]
-
-        thread: Optional[discord.Thread] = None
-        for typ in try_types:
-            try:
-                thread = await hub.create_thread(
-                    name=thread_name,
-                    type=typ,
-                    invitable=False if typ is discord.ChannelType.private_thread else True,
-                    auto_archive_duration=1440,
-                    reason=f"Ticket opened by {user} ({category})",
-                )
-                break
-            except discord.Forbidden:
-                continue
-
-        if thread is None:
-            await interaction.followup.send(
-                "I couldn't create a thread here (missing permissions). Please contact staff.",
-                ephemeral=True,
+        try:
+            thread = await hub.create_thread(
+                name=name,
+                type=discord.ChannelType.private_thread,
+                auto_archive_duration=10080,  # 7 days
+                reason=f"Ticket created: {kind}",
             )
-            return
+        except discord.HTTPException as e:
+            log.error("Failed to create thread: %s", e)
+            if responded:
+                return await inter.response.send_message("Couldn't create the ticket thread.", ephemeral=True)
+            else:
+                return await inter.followup.send("Couldn't create the ticket thread.", ephemeral=True)
 
+        # Add the user to the private thread
         try:
             await thread.add_user(user)
         except Exception:
             pass
 
-        await thread.send(f"{user.mention} {WELCOME_TEXT[category]}")
-        await interaction.followup.send(f"Thread opened: **{thread.name}**", ephemeral=True)
-
-    # Interaction routing for the persistent button ---------------------------
-
-    @commands.Cog.listener("on_interaction")
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type != discord.InteractionType.component:
-            return
-        if interaction.data and interaction.data.get("custom_id") == "tickets:open":
-            embed = discord.Embed(
-                title="Choose a category",
-                description=PANEL_DESCRIPTION,
-                color=discord.Color.blurple(),
-            )
-            await interaction.response.send_message(embed=embed, view=CategoryView(), ephemeral=True)
-
-    # Setup / Cleanup ---------------------------------------------------------
-
-    def _is_owner_or_manager(self, itx: discord.Interaction) -> bool:
-        if itx.user and itx.user.id == OWNER_ID:
-            return True
-        perms = itx.user.guild_permissions if isinstance(itx.user, discord.Member) else None
-        return bool(perms and (perms.manage_guild or perms.manage_channels))
-
-    @app_commands.command(name="ticket_hub_setup", description="Post the Ticket Hub panel in this channel.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def hub_setup(self, interaction: discord.Interaction):
-        if not self._is_owner_or_manager(interaction):
-            await interaction.response.send_message("You don't have permission.", ephemeral=True)
-            return
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Run this in a text channel.", ephemeral=True)
-            return
-
+        # Seed welcome
         embed = discord.Embed(
-            title=PANEL_TITLE,
-            description="Click the button below to open a private ticket. You'll pick the category in the next step.",
-            color=discord.Color.dark_theme(),
-        ).set_footer(text="ticket_hub")
-
-        await interaction.response.send_message("Panel posted.", ephemeral=True)
-        await channel.send(embed=embed, view=OpenTicketView())
-
-    @app_commands.command(
-        name="ticket_hub_cleanup",
-        description="Clean messages in THIS ticket-hub channel (safe, local only).",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def hub_cleanup(self, interaction: discord.Interaction, deep: Optional[bool] = False):
-        if not self._is_owner_or_manager(interaction):
-            await interaction.response.send_message("You don't have permission.", ephemeral=True)
-            return
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message("Run this in the ticket-hub text channel.", ephemeral=True)
-            return
-        if channel.id != TICKET_HUB_CHANNEL_ID:
-            await interaction.response.send_message(
-                "This command only works in the configured ticket-hub channel.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_message("Cleaning…", ephemeral=True)
-
-        deleted_total = 0
-        try:
-            while True:
-                batch = await channel.purge(
-                    limit=100,
-                    check=lambda m: not m.pinned,
-                    bulk=True,
-                    reason="ticket_hub_cleanup",
-                )
-                deleted_total += len(batch)
-                if len(batch) < 100:
-                    break
-                await asyncio.sleep(1.0)
-        except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to delete messages here.", ephemeral=True)
-            return
-
-        removed_threads = 0
-        if deep:
-            for th in channel.threads:
-                if th.owner_id == self.bot.user.id or any(th.name.startswith(p) for p in THREAD_PREFIX.values()):
-                    try:
-                        await th.delete(reason="ticket_hub_cleanup deep")
-                        removed_threads += 1
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        try:
-                            await th.archive(locked=True, reason="ticket_hub_cleanup deep (archive)")
-                            removed_threads += 1
-                        except Exception:
-                            pass
-
-        await interaction.followup.send(
-            f"Cleanup done. Deleted messages: **{deleted_total}**."
-            + (f" Deleted/archived threads: **{removed_threads}**." if deep else ""),
-            ephemeral=True,
+            title=f"{prefix} Ticket",
+            description=WELCOME_TEXT[kind],
+            color=discord.Color.blurple(),
+            timestamp=dt.utcnow(),
         )
+        await thread.send(content=user.mention, embed=embed)
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        log.info("tickets cog ready")
+        # Final ephemeral confirmation to the clicker
+        if responded:
+            await inter.response.send_message(f"Ticket created: {thread.mention}", ephemeral=True)
+        else:
+            await inter.followup.send(f"Ticket created: {thread.mention}", ephemeral=True)
 
-# --- Extension entry ---------------------------------------------------------
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tickets(bot))
-    if GUILD_ID:
-        try:
-            await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        except Exception as e:
-            log.warning("App command sync (guild) failed: %r", e)
-    else:
-        try:
-            await bot.tree.sync()
-        except Exception as e:
-            log.warning("App command sync (global) failed: %r", e)
