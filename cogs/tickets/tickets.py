@@ -1,280 +1,268 @@
-# cogs/tickets/tickets.py
-from __future__ import annotations
-
-import asyncio
 import os
+import asyncio
 from typing import Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ================== CONFIG (szövegek angolul) ==================
+# === ENV / CONFIG ===
+GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+TICKET_HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-HUB_TITLE = "Ticket Hub"
-HUB_DESC = (
-    "Open a ticket with the button below. You'll pick a category in the next step."
-)
-HUB_BUTTON = "Open Ticket"
+# Színek
+COLOR_INFO = discord.Color.blurple()
+COLOR_OK = discord.Color.green()
+COLOR_WARN = discord.Color.orange()
 
-CATEGORY_PROMPT_TITLE = "Select a Category"
-CATEGORY_PROMPT_DESC = (
-    "**Mebinu** — Collectible figure requests, variants, codes, rarity.\n"
-    "**Commission** — Paid, custom art requests (scope, budget, deadline).\n"
-    "**NSFW 18+** — Strict rules & review (adults only).\n"
-    "**General Help** — Quick Q&A and guidance."
-)
+# ---- Helper: jogosultság a setup/cleanup-hoz ----
+def _is_owner_or_manage_guild(interaction: discord.Interaction) -> bool:
+    if interaction.user.id == OWNER_ID:
+        return True
+    perms = interaction.user.guild_permissions
+    return perms.manage_guild or perms.administrator
 
-AGE_CHECK_TITLE = "Age Confirmation"
-AGE_CHECK_DESC = "This category is **18+**. Are you 18 or older?"
 
-THREAD_GREETING = (
-    "Welcome! This is your private thread for **{category}**.\n"
-    "Please describe your request; staff will follow up here."
-)
-
-# ================== ENV HELPERS ==================
-
-def env_int(name: str) -> Optional[int]:
-    try:
-        v = int(os.getenv(name, "0"))
-        return v or None
-    except Exception:
-        return None
-
-def get_guild_id() -> Optional[int]:
-    return env_int("GUILD_ID")
-
-def get_hub_channel_id() -> Optional[int]:
-    return env_int("TICKET_HUB_CHANNEL_ID")
-
-# ================== PERSISTENT VIEWS ==================
-
+# === VIEWS ===
 class OpenTicketView(discord.ui.View):
-    """Persistent, non-expiring view for the hub card."""
-    def __init__(self) -> None:
+    """Persistent view: a hub üzeneten egyetlen 'Open Ticket' gomb."""
+    def __init__(self):
         super().__init__(timeout=None)
+        # Custom ID fixen hagyjuk, hogy persistáljon restart után is
+        self.open_btn = discord.ui.Button(
+            style=discord.ButtonStyle.primary,
+            label="Open Ticket",
+            custom_id="ticket:open"
+        )
+        self.open_btn.callback = self.on_open_clicked
+        self.add_item(self.open_btn)
 
-    @discord.ui.button(
-        label=HUB_BUTTON,
-        style=discord.ButtonStyle.primary,
-        custom_id="hub_open_ticket_btn",
-    )
-    async def open_ticket(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def on_open_clicked(self, interaction: discord.Interaction):
+        """Ephemeral kategóriaválasztó + ismertető."""
         embed = discord.Embed(
-            title=CATEGORY_PROMPT_TITLE,
-            description=CATEGORY_PROMPT_DESC,
-            color=discord.Color.blurple(),
+            title="Choose a category",
+            description=(
+                "Pick what you need:\n"
+                "• **Mebinu** — collectible figure requests, variants, codes, rarity.\n"
+                "• **Commission** — paid, custom art requests (scope, budget, deadline).\n"
+                "• **NSFW 18+** — 18+ only; stricter rules & review.\n"
+                "• **General Help** — quick Q&A, guidance."
+            ),
+            color=COLOR_INFO,
         )
-        await interaction.response.send_message(
-            embed=embed,
-            view=CategoryView(),
-            ephemeral=True,
-        )
+        view = CategorySelectView()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-class CategoryView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Mebinu",
-        style=discord.ButtonStyle.blurple,
-        custom_id="cat_mebinu",
-    )
-    async def cat_mebinu(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await create_ticket_thread(interaction, "Mebinu")
+class CategorySelectView(discord.ui.View):
+    """Ephemeral gombsor a kategóriákhoz."""
+    def __init__(self):
+        super().__init__(timeout=180)
 
-    @discord.ui.button(
-        label="Commission",
-        style=discord.ButtonStyle.primary,  # kék, nem szürke
-        custom_id="cat_commission",
-    )
-    async def cat_commission(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await create_ticket_thread(interaction, "Commission")
+    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary, custom_id="ticket:cat_mebinu")
+    async def mebinu_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await start_ticket(interaction, category="MEBINU")
 
-    @discord.ui.button(
-        label="NSFW 18+",
-        style=discord.ButtonStyle.danger,
-        custom_id="cat_nsfw",
-    )
-    async def cat_nsfw(self, interaction: discord.Interaction, _: discord.ui.Button):
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary, custom_id="ticket:cat_commission")
+    async def commission_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await start_ticket(interaction, category="COMMISSION")
+
+    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger, custom_id="ticket:cat_nsfw")
+    async def nsfw_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        # age-gate: külön view Yes/No
+        view = NSFWConfirmView()
         embed = discord.Embed(
-            title=AGE_CHECK_TITLE,
-            description=AGE_CHECK_DESC,
-            color=discord.Color.red(),
+            title="Age confirmation required",
+            description="This section is **18+ only**. Are you 18 years old or older?",
+            color=COLOR_WARN,
         )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success, custom_id="ticket:cat_help")
+    async def help_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await start_ticket(interaction, category="GENERAL HELP")
+
+
+class NSFWConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="Yes, I'm 18+", style=discord.ButtonStyle.danger, custom_id="ticket:age_yes")
+    async def yes_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await start_ticket(interaction, category="NSFW 18+")
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="ticket:age_no")
+    async def no_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.send_message(
-            embed=embed, view=AgeConfirmView(), ephemeral=True
+            "Understood. You can't open an NSFW ticket. Choose another category from the hub.",
+            ephemeral=True
         )
 
-    @discord.ui.button(
-        label="General Help",
-        style=discord.ButtonStyle.success,
-        custom_id="cat_help",
-    )
-    async def cat_help(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await create_ticket_thread(interaction, "General Help")
 
-class AgeConfirmView(discord.ui.View):
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
+# === TICKET MŰVELETEK ===
+async def start_ticket(interaction: discord.Interaction, *, category: str):
+    """Privát thread indítása a hub csatornában, user hozzáadása, nyitó üzenet."""
+    guild = interaction.guild
+    if guild is None:
+        return await interaction.response.send_message("Guild context missing.", ephemeral=True)
 
-    @discord.ui.button(
-        label="Yes, I am 18+",
-        style=discord.ButtonStyle.danger,
-        custom_id="age_yes",
-    )
-    async def age_yes(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await create_ticket_thread(interaction, "NSFW 18+")
+    hub_ch: Optional[discord.TextChannel] = guild.get_channel(TICKET_HUB_CHANNEL_ID)  # type: ignore
+    if not isinstance(hub_ch, discord.TextChannel):
+        return await interaction.response.send_message("Ticket hub channel is misconfigured.", ephemeral=True)
 
-    @discord.ui.button(
-        label="No",
-        style=discord.ButtonStyle.secondary,
-        custom_id="age_no",
-    )
-    async def age_no(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_message(
-            "Understood — please choose another category.", ephemeral=True
-        )
-
-# ================== THREAD CREATION ==================
-
-async def create_ticket_thread(interaction: discord.Interaction, category: str):
-    """Creates a private thread and adds the user."""
-    # parent: current text channel (hub csatorna)
-    if isinstance(interaction.channel, discord.TextChannel):
-        parent = interaction.channel
-    elif isinstance(interaction.channel, discord.Thread) and interaction.channel.parent:
-        parent = interaction.channel.parent
-    else:
-        await interaction.response.send_message(
-            "Cannot open a thread here.", ephemeral=True
-        )
-        return
-
+    # Thread név
     thread_name = f"{category} | {interaction.user.display_name}"
-    thread = await parent.create_thread(
-        name=thread_name,
-        type=discord.ChannelType.private_thread,
-        invitable=False,
-    )
-    await thread.add_user(interaction.user)
 
-    await thread.send(
-        THREAD_GREETING.format(category=category),
-        allowed_mentions=discord.AllowedMentions.none(),
-    )
+    try:
+        thread = await hub_ch.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        # user hozzáadása
+        await thread.add_user(interaction.user)
 
-    # biztos visszajelzés a usernek
-    await interaction.response.send_message(
-        f"Thread opened: {thread.mention}", ephemeral=True
-    )
+        # nyitó üzenet
+        open_text = (
+            f"Welcome {interaction.user.mention}! This is your **{category}** private thread.\n"
+            "Share the details; staff will follow up here.\n"
+            "_Only invited members and staff can see this thread._"
+        )
+        await thread.send(open_text)
 
-# ================== COG ==================
+        # válasz a usernek linkkel
+        embed = discord.Embed(
+            title="Ticket opened",
+            description=f"Your private thread is ready: {thread.mention}",
+            color=COLOR_OK
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    except discord.Forbidden:
+        msg = "I don't have permission to create private threads in the ticket hub."
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception as e:
+        msg = f"Opening failed: `{type(e).__name__}: {e}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+
+
+# === COG ===
 class Tickets(commands.Cog, name="tickets"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def cog_load(self):
-        # Persistent view regisztrálása, hogy újraindítás után is éljen a gomb
+    async def cog_load(self) -> None:
+        # Register persistent views on startup
         self.bot.add_view(OpenTicketView())
 
-    # ---- HUB SETUP ----
-    @app_commands.command(
-        name="ticket_hub_setup",
-        description="Publish the Ticket Hub card (single 'Open Ticket' button).",
-    )
+    # ----- /ticket_hub_setup -----
+    @app_commands.command(name="ticket_hub_setup", description="Create or refresh the Ticket Hub message.")
     async def ticket_hub_setup(self, interaction: discord.Interaction):
-        hub_channel = await self._resolve_hub_channel(interaction)
-        if hub_channel is None:
-            return
+        if not _is_owner_or_manage_guild(interaction):
+            return await interaction.response.send_message("Not allowed.", ephemeral=True)
 
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("Guild context missing.", ephemeral=True)
+
+        hub_ch: Optional[discord.TextChannel] = guild.get_channel(TICKET_HUB_CHANNEL_ID)  # type: ignore
+        if not isinstance(hub_ch, discord.TextChannel):
+            return await interaction.response.send_message("Ticket hub channel is misconfigured.", ephemeral=True)
+
+        # (Opcionális light cleanup: csak a saját korábbi hub üzeneteinket próbáljuk leszedni.)
+        removed = 0
+        try:
+            async for msg in hub_ch.history(limit=200):
+                if msg.author == self.bot.user:
+                    # Kerüljük a rate limitet
+                    try:
+                        await msg.delete()
+                        removed += 1
+                        await asyncio.sleep(0.35)
+                    except:
+                        pass
+        except:
+            pass
+
+        # Új hub kártya + egyetlen „Open Ticket” gomb
         embed = discord.Embed(
-            title=HUB_TITLE, description=HUB_DESC, color=discord.Color.blurple()
+            title="🎫 Ticket Hub",
+            description="Click the button below to open a ticket. You will choose a category in the next step.",
+            color=COLOR_INFO
         )
-        msg = await hub_channel.send(embed=embed, view=OpenTicketView())
+        embed.set_footer(text="Hub is clean. Old messages removed: {}".format(removed))
+        await hub_ch.send(embed=embed, view=OpenTicketView())
 
-        await interaction.response.send_message(
-            f"Hub card published in {hub_channel.mention} (message id: {msg.id}).",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("Ticket Hub deployed.", ephemeral=True)
 
-    # ---- HUB CLEANUP (ha kell) ----
-    @app_commands.command(
-        name="ticket_hub_cleanup",
-        description="Clean the hub: delete bot messages; optionally archive/delete threads.",
-    )
-    @app_commands.describe(
-        deep="If true, also archive/lock existing private threads from this hub."
-    )
-    async def ticket_hub_cleanup(
-        self, interaction: discord.Interaction, deep: Optional[bool] = False
-    ):
-        hub_channel = await self._resolve_hub_channel(interaction)
-        if hub_channel is None:
-            return
+    # ----- /ticket_hub_cleanup [deep] -----
+    @app_commands.command(name="ticket_hub_cleanup", description="Clean the ticket hub channel; deep=true also deletes old threads.")
+    @app_commands.describe(deep="If true, attempt to delete old private threads too.")
+    async def ticket_hub_cleanup(self, interaction: discord.Interaction, deep: Optional[bool] = False):
+        if not _is_owner_or_manage_guild(interaction):
+            return await interaction.response.send_message("Not allowed.", ephemeral=True)
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("Guild context missing.", ephemeral=True)
 
-        deleted = 0
-        async for msg in hub_channel.history(limit=None, oldest_first=False):
+        hub_ch: Optional[discord.TextChannel] = guild.get_channel(TICKET_HUB_CHANNEL_ID)  # type: ignore
+        if not isinstance(hub_ch, discord.TextChannel):
+            return await interaction.response.send_message("Ticket hub channel is misconfigured.", ephemeral=True)
+
+        removed_msgs = 0
+        removed_threads = 0
+
+        # Üzenetek takarítása (csak bot üzenetek)
+        async for msg in hub_ch.history(limit=None):
             if msg.author == self.bot.user:
                 try:
                     await msg.delete()
-                    deleted += 1
-                    await asyncio.sleep(0.35)  # kíméljük a rate limitet
-                except discord.HTTPException:
-                    pass
-
-        removed_threads = 0
-        if deep:
-            # Csak a hub parent alatt levő private threadekre
-            for th in list(hub_channel.threads):
-                try:
-                    await th.edit(archived=True, locked=True)
-                    removed_threads += 1
+                    removed_msgs += 1
                     await asyncio.sleep(0.35)
-                except discord.HTTPException:
+                except:
                     pass
 
-        await interaction.followup.send(
-            f"Cleanup done.\n• Deleted messages: **{deleted}**\n"
-            f"• Archived/locked threads: **{removed_threads}**{' (deep)' if deep else ''}",
-            ephemeral=True,
-        )
+        # Thread takarítás, ha kérik
+        if deep:
+            # Aktív privát threadek
+            for th in hub_ch.threads:
+                try:
+                    await th.delete()
+                    removed_threads += 1
+                    await asyncio.sleep(0.5)
+                except:
+                    pass
 
-    # ---- RESET (kényelmi) ----
-    @app_commands.command(
-        name="ticket_hub_reset",
-        description="Cleanup then publish a fresh Ticket Hub card.",
-    )
-    async def ticket_hub_reset(self, interaction: discord.Interaction):
-        await self.ticket_hub_cleanup.callback(self, interaction, False)  # type: ignore
-        await self.ticket_hub_setup.callback(self, interaction)  # type: ignore
+            # Archivált threadek (async iterator)
+            try:
+                async for th in hub_ch.archived_threads(limit=200, private=True):
+                    try:
+                        await th.delete()
+                        removed_threads += 1
+                        await asyncio.sleep(0.5)
+                    except:
+                        pass
+            except:
+                pass
 
-    # ---- helper ----
-    async def _resolve_hub_channel(
-        self, interaction: discord.Interaction
-    ) -> Optional[discord.TextChannel]:
-        # először env-ből
-        hub_id = get_hub_channel_id()
-        if hub_id:
-            ch = interaction.guild.get_channel(hub_id) if interaction.guild else None
-            if isinstance(ch, discord.TextChannel):
-                return ch
-
-        # fallback: az aktuális csatorna legyen a hub
-        if isinstance(interaction.channel, discord.TextChannel):
-            return interaction.channel
-
+        # Napló / visszajelzés
         await interaction.response.send_message(
-            "Hub channel not found. Set TICKET_HUB_CHANNEL_ID or run the command in a text channel.",
-            ephemeral=True,
+            f"Cleanup done. Removed messages: **{removed_msgs}**."
+            + (f" Removed threads: **{removed_threads}**." if deep else ""),
+            ephemeral=True
         )
-        return None
 
-# ================== EXTENSION ENTRYPOINT ==================
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tickets(bot))
