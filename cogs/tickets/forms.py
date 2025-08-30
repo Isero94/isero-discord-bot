@@ -8,8 +8,6 @@ from discord.ext import commands
 
 NSFW_ROLE_NAME = "NSFW 18+"
 
-# --- Helper embeds (angol szövegek) ---
-
 def hub_header_embed() -> discord.Embed:
     e = discord.Embed(
         title="ISERO Ticket Hub",
@@ -26,7 +24,6 @@ def hub_header_embed() -> discord.Embed:
     e.set_footer(text="ISERO • clean, minimal, English-only UI")
     return e
 
-
 def categories_embed() -> discord.Embed:
     e = discord.Embed(
         title="Choose a Category",
@@ -41,7 +38,6 @@ def categories_embed() -> discord.Embed:
     )
     return e
 
-
 def nsfw_confirm_embed() -> discord.Embed:
     e = discord.Embed(
         title="Age Confirmation Required (18+)",
@@ -53,7 +49,6 @@ def nsfw_confirm_embed() -> discord.Embed:
     )
     return e
 
-
 def ticket_opened_embed(category_label: str) -> discord.Embed:
     e = discord.Embed(
         title=f"{category_label} Ticket Created",
@@ -62,16 +57,11 @@ def ticket_opened_embed(category_label: str) -> discord.Embed:
     )
     return e
 
-
-# --- Views ---
-
 class OpenTicketView(discord.ui.View):
     """Persistent view attached to the Hub message."""
     def __init__(self, cog: "TicketsCog"):
-        super().__init__(timeout=None)  # persistent
+        super().__init__(timeout=None)
         self.cog = cog
-
-        # persistent custom_id a gombhoz
         btn = discord.ui.Button(
             style=discord.ButtonStyle.success,
             label="Open Ticket",
@@ -81,7 +71,6 @@ class OpenTicketView(discord.ui.View):
         self.add_item(btn)
 
     async def on_open_clicked(self, interaction: discord.Interaction):
-        # csak a kattintónak jelenjen meg a kategóriapanel (ephemeral)
         view = CategoryView(self.cog)
         await interaction.response.send_message(
             embed=categories_embed(),
@@ -89,14 +78,12 @@ class OpenTicketView(discord.ui.View):
             ephemeral=True
         )
 
-
 class CategoryView(discord.ui.View):
     """Ephemeral category picker; only visible to the user who clicked Open Ticket."""
     def __init__(self, cog: "TicketsCog"):
         super().__init__(timeout=120)
         self.cog = cog
 
-        # Mabinu
         b1 = discord.ui.Button(
             style=discord.ButtonStyle.secondary,
             label="Mabinu",
@@ -106,9 +93,8 @@ class CategoryView(discord.ui.View):
         b1.callback = self._wrap_handler("Mabinu")
         self.add_item(b1)
 
-        # Commission (SZÍN JAVÍTVA → primary / blurple)
         b2 = discord.ui.Button(
-            style=discord.ButtonStyle.primary,
+            style=discord.ButtonStyle.primary,  # SZÍN: blurple
             label="Commission",
             custom_id="isero:cat:commission",
             emoji="🧾"
@@ -116,7 +102,6 @@ class CategoryView(discord.ui.View):
         b2.callback = self._wrap_handler("Commission")
         self.add_item(b2)
 
-        # NSFW 18+
         b3 = discord.ui.Button(
             style=discord.ButtonStyle.danger,
             label="NSFW 18+",
@@ -126,7 +111,6 @@ class CategoryView(discord.ui.View):
         b3.callback = self._nsfw_gate
         self.add_item(b3)
 
-        # General Help
         b4 = discord.ui.Button(
             style=discord.ButtonStyle.success,
             label="General Help",
@@ -148,7 +132,6 @@ class CategoryView(discord.ui.View):
             view=view,
             ephemeral=True
         )
-
 
 class AgeGateView(discord.ui.View):
     def __init__(self, cog: "TicketsCog"):
@@ -177,7 +160,6 @@ class AgeGateView(discord.ui.View):
         user = interaction.user
         assert guild is not None
 
-        # szerep biztosítása
         role = discord.utils.get(guild.roles, name=NSFW_ROLE_NAME)
         if role is None:
             try:
@@ -189,21 +171,23 @@ class AgeGateView(discord.ui.View):
                 )
                 return
 
-        # szerep kiosztása
-        member = guild.get_member(user.id)
-        if member is None:
-            member = await guild.fetch_member(user.id)
+        member = guild.get_member(user.id) or await guild.fetch_member(user.id)
         if role not in member.roles:
             try:
                 await member.add_roles(role, reason="ISERO 18+ self-confirmation")
             except discord.Forbidden:
-                await interaction.response.send_message(
-                    "I couldn't assign the `NSFW 18+` role (missing `Manage Roles`).",
-                    ephemeral=True
-                )
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "I couldn't assign the `NSFW 18+` role (missing `Manage Roles`).",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        "I couldn't assign the `NSFW 18+` role (missing `Manage Roles`).",
+                        ephemeral=True
+                    )
                 return
 
-        # NSFW ticket nyitása
         await self.cog.open_ticket_for(interaction, "NSFW 18+")
 
     async def _confirm_no(self, interaction: discord.Interaction):
@@ -212,9 +196,6 @@ class AgeGateView(discord.ui.View):
             ephemeral=True
         )
 
-
-# --- Cog-keret, amit a tickets.py fog ténylegesen használni ---
-
 class TicketsCog(commands.Cog):
     """Interface the View-ek hívásához; a tényleges Cog a tickets.py-ben van."""
     def __init__(self, bot: commands.Bot):
@@ -222,14 +203,32 @@ class TicketsCog(commands.Cog):
 
     async def open_ticket_for(self, interaction: discord.Interaction, category_label: str):
         """Privát thread létrehozása a Hub csatornában a kattintó usernek."""
+        # >>> FONTOS: előbb válasz/defer, hogy a followup használható legyen
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=False)
+            except Exception:
+                pass
+
         channel = interaction.channel
         user = interaction.user
         guild = interaction.guild
-        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            await interaction.followup.send("This must be used in a text channel.", ephemeral=True)
+
+        if guild is None or channel is None or not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send(
+                "This must be used in a standard **text channel**.",
+                ephemeral=True
+            )
             return
 
-        # privát thread neve
+        perms = channel.permissions_for(guild.me)
+        if not (perms.create_private_threads and perms.send_messages):
+            await interaction.followup.send(
+                "I need `Create Private Threads` and `Send Messages` permissions here.",
+                ephemeral=True
+            )
+            return
+
         now = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         safe_name = f"{category_label} • {user.name} • {now}"[:95]
 
@@ -238,7 +237,7 @@ class TicketsCog(commands.Cog):
                 name=safe_name,
                 type=discord.ChannelType.private_thread,
                 invitable=False,
-                auto_archive_duration=1440  # 24h
+                auto_archive_duration=1440
             )
         except discord.Forbidden:
             await interaction.followup.send(
@@ -253,23 +252,18 @@ class TicketsCog(commands.Cog):
             )
             return
 
-        # user behívása a threadbe
         try:
             await thread.add_user(user)
         except discord.HTTPException:
-            pass  # ha már bent van / nincs jog, akkor is megyünk tovább
+            pass
 
-        # nyitó üzenet a threadben
         intro = (
             f"Hello {user.mention}! This is your private **{category_label}** ticket.\n"
-            "Please describe your request. A team member will join shortly. "
-            "Use the thread to keep everything in one place."
+            "Please describe your request. A team member will join shortly."
         )
         await thread.send(intro)
 
-        # visszajelzés a kattintónak (csak neki)
         await interaction.followup.send(
             embed=ticket_opened_embed(category_label),
             ephemeral=True
         )
-# Future: reusable modal components and validators
