@@ -1,456 +1,423 @@
+# cogs/tickets/tickets.py
+# Teljes, önállóan bemásolható verzió (discord.py 2.4.x)
+# Funkciók:
+# - Ticket Hub panel (Open Ticket) – persistent view
+# - Kategória-választó (Mebinu / Commission / NSFW 18+ / General Help) – ephemerálisan
+# - NSFW 18+ megerősítés (Yes/No)
+# - Egy felhasználó = 1 aktív ticket (archív nem számít)
+# - Per-user cooldown (ENV: TICKET_COOLDOWN_SECONDS, default 20)
+# - /ticket_hub_setup  – hub újrapakolása (opcionális takarítással)
+# - /ticket_hub_cleanup – takarítás + hub visszarakás (interaction defer → followup, nincs “Unknown interaction”)
+# - /close – ticket lezárás/archiválás (ARCHIVE_CATEGORY_ID használatával, ha megadott)
+#
+# Szükséges ENV változók Renderen:
+#   TICKET_HUB_CHANNEL_ID    (szám)
+#   TICKETS_CATEGORY_ID      (szám)
+#   ARCHIVE_CATEGORY_ID      (szám, opcionális; ha nincs, a ticket kategóriában hagyjuk és "arch-" prefixet kap)
+#   TICKET_COOLDOWN_SECONDS  (szám, opcionális; default 20)
+#   OWNER_ID                 (szám – a tulaj; csak naplózásnál használjuk itt)
+#
+# Megjegyzés:
+# - A ticket csatorna topic-jába bekerül: "owner:<USER_ID> | opened:<ISO_DATETIME>"
+#   Ezt használjuk az "egy aktív ticket / user" gyors ellenőrzésére.
+
 from __future__ import annotations
 
 import os
 import re
-import time
-import asyncio
 import logging
-from typing import Optional, Literal, Callable
+import asyncio
+from typing import Optional, Literal
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+
 log = logging.getLogger(__name__)
 
-# ========= Env / config ======================================================
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+# ------------------------------- Segéd --------------------------------- #
 
-HUB_CHANNEL_ID = int(os.getenv("TICKET_HUB_CHANNEL_ID", "0"))          # opcionális
-TICKETS_CATEGORY_ID = int(os.getenv("TICKETS_CATEGORY_ID", "0"))        # opcionális
-ARCHIVES_CATEGORY_ID = int(os.getenv("ARCHIVES_CATEGORY_ID", "0"))      # opcionális
-
-# csak spam-ellen:
-CREATE_COOLDOWN_SECONDS = 10
-
-# egyetlen aktív ticket felhasználónként (globálisan, nem kategóriánként)
-ONE_TICKET_PER_USER = True
-
-PANEL_TITLE = "Ticket Hub"
-PANEL_DESCRIPTION = (
-    "Press **Open Ticket** to start. In the next step you'll choose a category.\n\n"
-    "Click the button. Category selection comes next."
-)
-CATEGORIES_HELP = (
-    "**Choose a category:**\n"
-    "• **Mebinu** — Collectible figures: requests, variants, codes, rarity.\n"
-    "• **Commission** — Paid custom art: scope, budget, deadline.\n"
-    "• **NSFW 18+** — Adults only; stricter rules & review.\n"
-    "• **General Help** — Quick Q&A and guidance."
-)
-WELCOME_TEXT = {
-    "mebinu":     "Welcome! This private thread is for **Mebinu** (collectibles). Please describe your request.",
-    "commission": "Welcome! This private thread is for **Commission** work. Please share scope, budget, deadline.",
-    "nsfw":       "Welcome! This private thread is for **NSFW (18+)** topics. Follow the server rules strictly.",
-    "general":    "Welcome! This private thread is for **General Help**. Tell us what you need.",
-}
-TICKET_NAME_PREFIX = {"mebinu": "mebinu", "commission": "commission", "nsfw": "nsfw", "general": "general"}
-
-NAME_PATTERN = re.compile(r"^(mebinu|commission|nsfw|general)[-_].+", re.IGNORECASE)
+def _to_int(env_name: str, default: int = 0) -> int:
+    try:
+        return int(os.getenv(env_name, "").strip() or default)
+    except Exception:
+        return default
 
 
-def make_ticket_topic(user_id: int, kind: str, archived: bool = False) -> str:
-    return f"[ticket] owner={user_id} kind={kind} archived={int(archived)}"
+def _slugify(name: str) -> str:
+    """Egyszerű, discord-csatorna-barát név."""
+    s = name.lower().strip()
+    s = re.sub(r"\s+", "-", s)
+    s = re.sub(r"[^a-z0-9\-_.]", "", s)
+    s = s.strip("-._")
+    return s or "user"
 
 
-def _guilds_opt() -> Callable:
-    return app_commands.guilds(discord.Object(id=GUILD_ID)) if GUILD_ID else (lambda f: f)
+# ------------------------------ A Cog ---------------------------------- #
 
-
-# ========= Views =============================================================
-class OpenTicketView(discord.ui.View):
-    def __init__(self, cog: "Tickets"):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="tickets:open")
-    async def open_ticket(self, interaction: discord.Interaction, _):
-        # csak per-user ephemeral prompt
-        await interaction.response.send_message(
-            CATEGORIES_HELP, view=CategorySelectView(self.cog), ephemeral=True
-        )
-
-
-class CategorySelectView(discord.ui.View):
-    def __init__(self, cog: "Tickets"):
-        super().__init__(timeout=120)
-        self.cog = cog
-
-    async def _go(self, i: discord.Interaction, kind: Literal["mebinu", "commission", "general"]):
-        # “eltüntetjük” a promptot, hogy ne maradjanak kattintható gombok
-        if not i.response.is_done():
-            await i.response.edit_message(content="Working…", view=None)
-        else:
-            try:
-                await i.edit_original_response(content="Working…", view=None)
-            except Exception:
-                pass
-        await self.cog.create_ticket(i, kind=kind)
-
-    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary, custom_id="tickets:cat:mebinu")
-    async def mebinu(self, i: discord.Interaction, _): await self._go(i, "mebinu")
-
-    @discord.ui.button(label="Commission", style=discord.ButtonStyle.secondary, custom_id="tickets:cat:commission")
-    async def commission(self, i: discord.Interaction, _): await self._go(i, "commission")
-
-    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger, custom_id="tickets:cat:nsfw")
-    async def nsfw(self, i: discord.Interaction, _):
-        # helyben kérdezünk, és azonnal “eltakarítjuk” a nézetet válasz után
-        await i.response.edit_message(content="Are you 18 or older?", view=NSFWConfirmView(self.cog))
-
-
-    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success, custom_id="tickets:cat:general")
-    async def general(self, i: discord.Interaction, _): await self._go(i, "general")
-
-
-class NSFWConfirmView(discord.ui.View):
-    def __init__(self, cog: "Tickets"):
-        super().__init__(timeout=60)
-        self.cog = cog
-
-    async def _clean_and(self, i: discord.Interaction, do: Literal["yes", "no"]):
-        # töröljük a nézetet, hogy ne legyen újrakattintás
-        if not i.response.is_done():
-            await i.response.edit_message(content="Processing…", view=None)
-        else:
-            try:
-                await i.edit_original_response(content="Processing…", view=None)
-            except Exception:
-                pass
-
-        if do == "yes":
-            await self.cog.create_ticket(i, kind="nsfw")
-        else:
-            await i.followup.send("Understood. NSFW ticket cancelled.", ephemeral=True)
-
-        # ha még megvan az eredeti ephemeral, töröljük
-        try:
-            await i.delete_original_response()
-        except Exception:
-            pass
-
-    @discord.ui.button(label="Yes", style=discord.ButtonStyle.success, custom_id="tickets:nsfw:yes")
-    async def yes(self, i: discord.Interaction, _): await self._clean_and(i, "yes")
-
-    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, custom_id="tickets:nsfw:no")
-    async def no(self, i: discord.Interaction, _): await self._clean_and(i, "no")
-
-
-class TicketOwnerControls(discord.ui.View):
-    def __init__(self, cog: "Tickets", channel_id: int):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.channel_id = channel_id
-
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="tickets:close")
-    async def close_ticket(self, interaction: discord.Interaction, _):
-        ch = interaction.client.get_channel(self.channel_id)
-        if not isinstance(ch, discord.TextChannel):
-            await interaction.response.send_message("Channel not found.", ephemeral=True)
-            return
-
-        opener_id = None
-        if ch.topic and "owner=" in ch.topic:
-            try:
-                opener_id = int(ch.topic.split("owner=")[1].split()[0])
-            except Exception:
-                opener_id = None
-
-        if interaction.user.id not in {opener_id, OWNER_ID} and not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message("Only the opener or staff can close this ticket.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=False)
-        ok = await self.cog.archive_ticket_channel(ch, closed_by=interaction.user)
-        if ok:
-            await interaction.followup.send("Ticket archived.", ephemeral=True)
-        else:
-            await interaction.followup.send("Failed to archive (permissions?).", ephemeral=True)
-
-
-# ========= Cog ===============================================================
 class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._cooldown: dict[int, float] = {}
-        self._locks: dict[int, asyncio.Lock] = {}
+
+        self.hub_channel_id: int = _to_int("TICKET_HUB_CHANNEL_ID")
+        self.ticket_category_id: int = _to_int("TICKETS_CATEGORY_ID")
+        self.archive_category_id: Optional[int] = _to_int("ARCHIVE_CATEGORY_ID") or None
+        self.cooldown_secs: int = _to_int("TICKET_COOLDOWN_SECONDS", 20)
+
+        # per-user cooldown: {user_id: monotonic_until}
+        self.cooldowns: dict[int, float] = {}
+
+        self._views_added = False
+
+    # ---- Életciklus ---- #
 
     async def cog_load(self) -> None:
-        self.bot.add_view(OpenTicketView(self))
+        # Persistent view: csak a HubView-ot kell beregisztrálni
+        if not self._views_added:
+            self.bot.add_view(HubView(self))  # timeout=None, persistent
+            self._views_added = True
         log.info("[ISERO] Tickets cog loaded (persistent view ready)")
 
-    # ----- helpers -----------------------------------------------------------
-    async def resolve_tickets_category(
-        self, *, guild: discord.Guild, hub_channel: Optional[discord.TextChannel]
-    ) -> Optional[discord.CategoryChannel]:
-        if TICKETS_CATEGORY_ID:
-            cat = guild.get_channel(TICKETS_CATEGORY_ID)
-            if isinstance(cat, discord.CategoryChannel):
-                return cat
+    # --------------------- Publikus segédfüggvények --------------------- #
 
-        if isinstance(hub_channel, discord.TextChannel) and isinstance(hub_channel.category, discord.CategoryChannel):
-            return hub_channel.category
-
-        for c in guild.categories:
-            if c.name.lower().startswith(("tickets", "ticket")):
-                return c
-
+    async def post_hub(self, channel: discord.TextChannel) -> None:
+        """Kiteszi a Hub panelt az adott csatornába."""
+        embed = discord.Embed(
+            title="Ticket Hub",
+            description="Nyomd meg az **Open Ticket** gombot a kezdéshez. A következő lépésben kategóriát választasz.",
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Kattints a gombra. A kategóriaválasztás következik.")
         try:
-            perms = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-            return await guild.create_category_channel("tickets", overwrites=perms, reason="ISERO auto-create tickets category")
+            await channel.send(embed=embed, view=HubView(self))
         except discord.HTTPException as e:
-            log.exception("Failed to create tickets category: %s", e)
+            log.warning("Hub post failed: %r", e)
+
+    async def get_hub_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        ch = guild.get_channel(self.hub_channel_id)
+        return ch if isinstance(ch, discord.TextChannel) else None
+
+    def get_ticket_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
+        cat = guild.get_channel(self.ticket_category_id)
+        return cat if isinstance(cat, discord.CategoryChannel) else None
+
+    def get_archive_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
+        if not self.archive_category_id:
             return None
+        cat = guild.get_channel(self.archive_category_id)
+        return cat if isinstance(cat, discord.CategoryChannel) else None
 
-    async def resolve_archives_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
-        if ARCHIVES_CATEGORY_ID:
-            cat = guild.get_channel(ARCHIVES_CATEGORY_ID)
-            if isinstance(cat, discord.CategoryChannel):
-                return cat
-
-        for c in guild.categories:
-            if c.name.lower().startswith(("ticket-archives", "archives", "archív")):
-                return c
-
-        try:
-            perms = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
-            return await guild.create_category_channel("ticket-archives", overwrites=perms, reason="ISERO create archives category")
-        except discord.HTTPException as e:
-            log.exception("Failed to create archives category: %s", e)
-            return None
-
-    def _parse_topic(self, topic: Optional[str]) -> tuple[Optional[int], Optional[str], bool]:
-        if not topic or not topic.startswith("[ticket]"):
-            return None, None, False
-        owner = kind = None
-        archived = False
-        for part in topic.split():
-            if part.startswith("owner="):
-                try:
-                    owner = int(part.split("=", 1)[1])
-                except Exception:
-                    owner = None
-            elif part.startswith("kind="):
-                kind = part.split("=", 1)[1]
-            elif part.startswith("archived="):
-                archived = part.split("=", 1)[1] == "1"
-        return owner, kind, archived
-
-    def _get_lock(self, user_id: int) -> asyncio.Lock:
-        lock = self._locks.get(user_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[user_id] = lock
-        return lock
-
-    async def find_existing_ticket(
-        self, *, guild: discord.Guild, user_id: int, kind: str | None, search_category: Optional[discord.CategoryChannel]
-    ) -> Optional[discord.TextChannel]:
-        cats = [c for c in guild.categories]
-        if search_category and search_category in cats:
-            cats.remove(search_category)
-            cats.insert(0, search_category)
-
-        for cat in cats:
-            for ch in cat.channels:
-                if isinstance(ch, discord.TextChannel) and ch.topic:
-                    owner, k, archived = self._parse_topic(ch.topic)
-                    if archived:
-                        continue
-                    if owner == user_id and (kind is None or k == kind):
-                        return ch
-        return None
-
-    async def archive_ticket_channel(self, ch: discord.TextChannel, *, closed_by: discord.abc.User) -> bool:
-        guild = ch.guild
-        archives = await self.resolve_archives_category(guild)
-        if not archives:
+    async def has_open_ticket(self, guild: discord.Guild, user_id: int) -> bool:
+        """True ha a felhasználónak van **aktív** ticketje (archív nem számít)."""
+        cat = self.get_ticket_category(guild)
+        if not cat:
             return False
+        for ch in cat.channels:
+            if isinstance(ch, discord.TextChannel) and ch.topic:
+                if f"owner:{user_id}" in ch.topic and not ch.name.startswith("arch-"):
+                    return True
+        return False
 
-        overwrites = dict(ch.overwrites)
-        opener_id, kind, _ = self._parse_topic(ch.topic or "")
-        if opener_id:
-            opener = guild.get_member(opener_id)
-            if opener:
-                overwrites[opener] = discord.PermissionOverwrite(view_channel=False)
+    def _category_embed(self) -> discord.Embed:
+        em = discord.Embed(
+            title="Válassz kategóriát:",
+            description=(
+                "• **Mebinu** — Gyűjthető figurák: kérések, variánsok, kódok, ritkaság.\n"
+                "• **Commission** — Fizetős megbízás: terjedelem, költség, határidő.\n"
+                "• **NSFW 18+** — Csak felnőtteknek; szigorúbb szabályok.\n"
+                "• **General Help** — Gyors Q&A és iránymutatás.\n"
+            ),
+            color=discord.Color.dark_theme()
+        )
+        return em
 
-        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+    async def create_ticket_channel(
+        self,
+        interaction: discord.Interaction,
+        category_key: Literal["mebinu", "commission", "nsfw", "help"]
+    ) -> discord.TextChannel:
+        """Létrehoz egy ticket csatornát a ticket kategóriában.
+        A kategória-permeket **örökli** (sync), így a staff jogokat elég a kategórián állítani.
+        """
+        guild = interaction.guild
+        assert guild is not None
 
+        cat = self.get_ticket_category(guild)
+        if not cat:
+            raise RuntimeError("TICKETS_CATEGORY_ID hibás vagy nincs beállítva.")
+
+        uname = _slugify(interaction.user.name)
+        base = f"{category_key}-{uname}"
+        name = base
+
+        # Ütközés esetén toldunk egy rövid számlálót
+        i = 2
+        while discord.utils.get(cat.channels, name=name):
+            name = f"{base}-{i}"
+            i += 1
+
+        topic = f"owner:{interaction.user.id} | opened:{discord.utils.utcnow().isoformat()}"
+
+        # A kategóriáról szinkronizáljuk a jogosultságokat: staff elérést ott kezeld.
+        ch = await guild.create_text_channel(
+            name=name,
+            category=cat,
+            topic=topic
+        )
+
+        # Üdvözlő üzenet a csatornába
+        greet = discord.Embed(
+            title="Üdv a ticketedben!",
+            description=(
+                "Írd le röviden, miben tudunk segíteni.\n\n"
+                "Ha végeztünk, használd a **/close** parancsot a lezáráshoz.\n"
+            ),
+            color=discord.Color.green()
+        )
+        greet.set_footer(text=f"Kategória: {category_key.upper()} • Tulaj: {interaction.user.name}")
         try:
-            await ch.edit(
-                name=f"archived-{ch.name}",
-                topic=make_ticket_topic(opener_id or 0, kind or "unknown", archived=True),
-                category=archives,
-                overwrites=overwrites,
-                reason=f"Ticket archived by {closed_by}",
-            )
-            return True
-        except discord.HTTPException as e:
-            log.exception("Archive failed: %s", e)
-            return False
-
-    # ----- create ticket -----------------------------------------------------
-    async def create_ticket(self, interaction: discord.Interaction, *, kind: Literal["mebinu", "commission", "nsfw", "general"]):
-        now = time.time()
-        last = self._cooldown.get(interaction.user.id, 0)
-        if now - last < CREATE_COOLDOWN_SECONDS:
-            remain = int(CREATE_COOLDOWN_SECONDS - (now - last) + 0.5)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"Please wait **{remain}s** before creating another ticket.", ephemeral=True)
-            else:
-                await interaction.followup.send(f"Please wait **{remain}s** before creating another ticket.", ephemeral=True)
-            return
-
-        lock = self._get_lock(interaction.user.id)
-        async with lock:
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True, thinking=False)
-
-            guild = interaction.guild
-            assert guild is not None
-            hub_ch = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
-
-            category = await self.resolve_tickets_category(guild=guild, hub_channel=hub_ch)
-            if not isinstance(category, discord.CategoryChannel):
-                await interaction.followup.send("Ticket category is not configured. Ask the admin.", ephemeral=True)
-                return
-
-            # blokk: ha már van NYITOTT ticket, bármi fajtából
-            if ONE_TICKET_PER_USER:
-                existing_any = await self.find_existing_ticket(
-                    guild=guild, user_id=interaction.user.id, kind=None, search_category=category
-                )
-                if existing_any:
-                    await interaction.followup.send(
-                        f"You already have an open ticket: {existing_any.mention}\n"
-                        f"Please **close it** before opening a new one.",
-                        ephemeral=True,
-                    )
-                    return
-            else:
-                existing_same = await self.find_existing_ticket(
-                    guild=guild, user_id=interaction.user.id, kind=kind, search_category=category
-                )
-                if existing_same:
-                    await interaction.followup.send(
-                        f"You already have an open **{kind}** ticket: {existing_same.mention}",
-                        ephemeral=True,
-                    )
-                    return
-
-            base = TICKET_NAME_PREFIX[kind]
-            safe = re.sub(r"[^a-z0-9\-]", "", interaction.user.name.lower().replace(" ", "-"))
-            name = f"{base}-{safe}"
-            topic = make_ticket_topic(interaction.user.id, kind, archived=False)
-
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(view_channel=False),
-                interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            }
-            nsfw_flag = (kind == "nsfw")
-
-            try:
-                channel = await guild.create_text_channel(
-                    name=name, category=category, topic=topic, nsfw=nsfw_flag,
-                    overwrites=overwrites, reason=f"Ticket created by {interaction.user} ({kind})"
-                )
-                if hub_ch and hub_ch.category_id == channel.category_id:
-                    await channel.edit(position=hub_ch.position + 1)
-            except discord.HTTPException as e:
-                log.exception("Failed to create ticket channel: %s", e)
-                await interaction.followup.send("Failed to create ticket channel (permissions?).", ephemeral=True)
-                return
-
-            try:
-                await channel.send(WELCOME_TEXT[kind])
-                await channel.send("Owner controls:", view=TicketOwnerControls(self, channel.id))
-            except discord.HTTPException:
-                pass
-
-            self._cooldown[interaction.user.id] = now
-
-            await interaction.followup.send(f"Your ticket is ready: {channel.mention}", ephemeral=True)
-
-            # takarítás: ha volt előző ephemeral prompt, töröljük
-            try:
-                await interaction.delete_original_response()
-            except Exception:
-                pass
-
-    # ----- hub setup / cleanup ----------------------------------------------
-    @_guilds_opt()
-    @app_commands.command(name="ticket_hub_setup", description="Post the Ticket Hub panel into this channel.")
-    async def ticket_hub_setup(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=False)
-
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send("Please run this inside a text channel.", ephemeral=True)
-            return
-
-        embed = discord.Embed(title=PANEL_TITLE, description=PANEL_DESCRIPTION, color=discord.Color.blurple())
-        try:
-            await channel.send(embed=embed, view=OpenTicketView(self))
-            await interaction.followup.send("Ticket Hub panel posted.", ephemeral=True)
-        except discord.HTTPException as e:
-            log.exception("Failed to post hub panel: %s", e)
-            await interaction.followup.send("Failed to post panel (permissions?).", ephemeral=True)
-
-    @_guilds_opt()
-    @app_commands.command(name="ticket_hub_cleanup", description="Cleanup this hub channel. Optionally delete all ticket channels.")
-    @app_commands.describe(deep="Also delete all bot-made ticket channels.")
-    async def ticket_hub_cleanup(self, interaction: discord.Interaction, deep: Optional[bool] = False):
-        await interaction.response.defer(ephemeral=True, thinking=False)
-
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send("Please run this inside the hub text channel.", ephemeral=True)
-            return
-
-        if not (interaction.user.guild_permissions.manage_guild or interaction.user.id == OWNER_ID):
-            await interaction.followup.send("You need Manage Server to do this.", ephemeral=True)
-            return
-
-        deleted = 0
-        try:
-            deleted = len(await channel.purge(limit=1000, check=lambda m: not m.pinned,
-                                              reason=f"Ticket hub cleanup by {interaction.user}"))
-        except discord.Forbidden:
-            await interaction.followup.send("Missing permissions to purge messages.", ephemeral=True)
-            return
-        except discord.HTTPException as e:
-            log.exception("Purge failed: %s", e)
-
-        removed_channels = 0
-        if deep:
-            guild = interaction.guild
-            assert guild is not None
-            ticket_cat = await self.resolve_tickets_category(guild=guild, hub_channel=channel)
-            if ticket_cat:
-                for ch in list(ticket_cat.channels):
-                    if isinstance(ch, discord.TextChannel):
-                        topic = ch.topic or ""
-                        try_topic = topic.startswith("[ticket]")
-                        try_name = NAME_PATTERN.match(ch.name) is not None
-                        if try_topic or try_name:
-                            try:
-                                await ch.delete(reason=f"Ticket deep-cleanup by {interaction.user}")
-                                removed_channels += 1
-                            except discord.HTTPException:
-                                pass
-
-        try:
-            embed = discord.Embed(title=PANEL_TITLE, description=PANEL_DESCRIPTION, color=discord.Color.blurple())
-            await channel.send(embed=embed, view=OpenTicketView(self))
+            await ch.send(content=interaction.user.mention, embed=greet)
         except discord.HTTPException:
             pass
 
-        note = f"Cleanup done. Deleted messages: **{deleted}**"
-        if deep:
-            note += f" • Removed ticket channels: **{removed_channels}**"
-        await interaction.followup.send(note, ephemeral=True)
+        return ch
 
+    # ------------------------------- Parancsok ------------------------------ #
+
+    @app_commands.command(name="ticket_hub_setup", description="Ticket hub panel kihelyezése (opcionálisan takarít is).")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def ticket_hub_setup(self, interaction: discord.Interaction, cleanup: Optional[bool] = False):
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        guild = interaction.guild
+        if not guild:
+            return await interaction.followup.send("Csak szerveren használható.", ephemeral=True)
+
+        hub = await self.get_hub_channel(guild)
+        if not hub:
+            return await interaction.followup.send("A TICKET_HUB_CHANNEL_ID nincs jól beállítva.", ephemeral=True)
+
+        deleted = 0
+        if cleanup:
+            async for m in hub.history(limit=None, oldest_first=False):
+                if m.author == self.bot.user:
+                    try:
+                        await m.delete()
+                        deleted += 1
+                    except discord.HTTPException:
+                        pass
+
+        await self.post_hub(hub)
+        await interaction.followup.send(f"Hub kész. Törölt üzenetek: **{deleted}**", ephemeral=True)
+
+    @app_commands.command(name="ticket_hub_cleanup", description="Hub takarítás és panel visszarakás.")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def ticket_hub_cleanup(self, interaction: discord.Interaction, deep: Optional[bool] = False):
+        # Unknown interaction elkerülése: defer → hosszabb művelet jöhet
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        guild = interaction.guild
+        if not guild:
+            return await interaction.followup.send("Csak szerveren használható.", ephemeral=True)
+
+        ch = interaction.channel
+        if not isinstance(ch, discord.TextChannel):
+            return await interaction.followup.send("Nem szövegcsatorna.", ephemeral=True)
+
+        deleted = 0
+        try:
+            async for m in ch.history(limit=None, oldest_first=False):
+                # deep=True esetén agresszívabban pucolunk (bot összes üzenete),
+                # deep=False esetén csak a panel/komponensek tipikus üzeneteit.
+                if m.author == self.bot.user:
+                    if not deep:
+                        # hagyhatnánk más bot-üzeneteket is, de praktikus mindent vinni
+                        pass
+                    try:
+                        await m.delete()
+                        deleted += 1
+                    except discord.HTTPException:
+                        pass
+        finally:
+            # Panel visszarakása
+            await self.post_hub(ch)
+
+        await interaction.followup.send(f"Cleanup kész. Törölve: **{deleted}**", ephemeral=True)
+
+    @app_commands.command(name="close", description="Lezárja és archiválja az aktuális ticketet.")
+    async def close_ticket(self, interaction: discord.Interaction, reason: Optional[str] = None):
+        ch = interaction.channel
+        if not isinstance(ch, discord.TextChannel):
+            return await interaction.response.send_message("Nem ticket csatorna.", ephemeral=True)
+
+        # Csak ticket csatornán legyen használható (topicban owner:<id>)
+        if not (ch.topic and "owner:" in ch.topic):
+            return await interaction.response.send_message("Ez nem ticket csatorna.", ephemeral=True)
+
+        # Jogosultság: staff (manage_channels) VAGY a ticket tulaja
+        is_staff = interaction.user.guild_permissions.manage_channels
+        is_owner = False
+        try:
+            m = re.search(r"owner:(\d+)", ch.topic or "")
+            if m and int(m.group(1)) == interaction.user.id:
+                is_owner = True
+        except Exception:
+            pass
+
+        if not (is_staff or is_owner):
+            return await interaction.response.send_message("Nincs jogod lezárni ezt a ticketet.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        guild = interaction.guild
+        assert guild is not None
+
+        new_name = ch.name
+        if not new_name.startswith("arch-"):
+            new_name = f"arch-{new_name}"
+
+        new_category = self.get_archive_category(guild) or ch.category
+
+        try:
+            await ch.edit(name=new_name, category=new_category)
+        except discord.HTTPException as e:
+            log.warning("Ticket archive edit failed: %r", e)
+
+        await interaction.followup.send("Ticket archiválva. Köszönjük!", ephemeral=True)
+
+    # ---------------------------- View callbackok --------------------------- #
+
+    async def on_open_ticket_clicked(self, interaction: discord.Interaction):
+        """Open Ticket gomb callback – itt dől el minden:
+           - van-e aktív ticket
+           - cooldown
+           - ha oké, kategória-választó megy EPHEMERÁLIS üzenetként
+        """
+        import time
+
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Csak szerveren használható.", ephemeral=True)
+
+        # Aktív ticket check ELŐSZÖR → ne jelenjen meg a választó se.
+        if await self.has_open_ticket(guild, interaction.user.id):
+            return await interaction.response.send_message(
+                "Már van egy nyitott ticketed. Zárd le a **/close** paranccsal, mielőtt újat nyitsz.",
+                ephemeral=True
+            )
+
+        # Cooldown
+        now = time.monotonic()
+        until = self.cooldowns.get(interaction.user.id, 0.0)
+        if now < until:
+            return await interaction.response.send_message(
+                "Kérlek, várj egy kicsit, mielőtt új ticketet nyitsz.",
+                ephemeral=True
+            )
+        self.cooldowns[interaction.user.id] = now + float(self.cooldown_secs)
+
+        # Kategória-választó (ephemeral) – így a hub tiszta marad
+        await interaction.response.send_message(
+            embed=self._category_embed(),
+            view=CategoryView(self),
+            ephemeral=True
+        )
+
+    async def on_category_chosen(self, interaction: discord.Interaction, category_key: str):
+        """Mebinu / Commission / Help közvetlenül ticketet nyit;
+           NSFW külön megerősítést kér.
+        """
+        guild = interaction.guild
+        if not guild:
+            return await interaction.response.send_message("Csak szerveren használható.", ephemeral=True)
+
+        if category_key == "nsfw":
+            # NSFW megerősítés
+            return await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="Elmúltál 18 éves?",
+                    color=discord.Color.red()
+                ),
+                view=NSFWConfirmView(self)
+            )
+
+        # Egyéb kategóriák – ticket létrehozás
+        ch = await self.create_ticket_channel(interaction, category_key)  # type: ignore
+        # Tisztítjuk az ephemeral üzenetet (választó eltűnik)
+        await interaction.response.edit_message(content=None, embed=None, view=None)
+        # Privát link a usernek
+        await interaction.followup.send(f"A ticketed elkészült: {ch.mention}", ephemeral=True)
+
+    async def on_nsfw_confirm(self, interaction: discord.Interaction, confirmed: bool):
+        if not confirmed:
+            try:
+                await interaction.response.edit_message(content="Értettem, nem nyitunk NSFW ticketet.", embed=None, view=None)
+            except discord.HTTPException:
+                pass
+            return
+
+        # Igen → NSFW ticket
+        ch = await self.create_ticket_channel(interaction, "nsfw")  # type: ignore
+        try:
+            await interaction.response.edit_message(content=None, embed=None, view=None)
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send(f"A ticketed elkészült: {ch.mention}", ephemeral=True)
+
+
+# ------------------------------- Views ---------------------------------- #
+
+class HubView(discord.ui.View):
+    """Állandó (persistent) view a hub üzeneten."""
+    def __init__(self, cog: Tickets):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="ticket:open")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_open_ticket_clicked(interaction)
+
+
+class CategoryView(discord.ui.View):
+    """Ephemeral kategória választó (nem persistent)."""
+    def __init__(self, cog: Tickets):
+        super().__init__(timeout=180)  # 3 perc után magától lejár
+        self.cog = cog
+
+    @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.secondary)
+    async def mebinu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_category_chosen(interaction, "mebinu")
+
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.secondary)
+    async def commission(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_category_chosen(interaction, "commission")
+
+    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger)
+    async def nsfw(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_category_chosen(interaction, "nsfw")
+
+    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success)
+    async def help(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_category_chosen(interaction, "help")
+
+
+class NSFWConfirmView(discord.ui.View):
+    """NSFW megerősítés Yes/No – ephemeral."""
+    def __init__(self, cog: Tickets):
+        super().__init__(timeout=60)
+        self.cog = cog
+
+    @discord.ui.button(label="Yes", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_nsfw_confirm(interaction, True)
+
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.on_nsfw_confirm(interaction, False)
+
+
+# ----------------------------- setup() ---------------------------------- #
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tickets(bot))
