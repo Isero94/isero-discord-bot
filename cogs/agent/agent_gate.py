@@ -1,6 +1,7 @@
 # cogs/agent/agent_gate.py
 # ISERO – Agent Gate (mention/wake-word kapu + modellhívás + biztonságos küldés)
-# Javítás: 50035 "Unknown message" elkerülése (fail_if_not_exists + fallback send)
+# Fix: 50035 "Unknown message" (fail_if_not_exists + fallback send)
+# Update: profán üzenetek NEM váltanak agent választ; rövid, max ~300 char; "ping/pingel" → pong
 
 from __future__ import annotations
 
@@ -32,8 +33,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_APIKEY") or os
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_MODEL_HEAVY = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
 
-# Csatorna whitelist – ha üres, **nem** korlátozunk (figyelmeztetéssel),
-# hogy tesztelni tudd. Ha szigorú whitelistet szeretnél, töltsd fel CSV-vel.
+# Csatorna whitelist – ha üres, engedünk minden csatornát (tesztbarát).
 AGENT_ALLOWED_CHANNELS = _csv_list(os.getenv("AGENT_ALLOWED_CHANNELS", "").strip())
 if not AGENT_ALLOWED_CHANNELS:
     log.warning("AGENT_ALLOWED_CHANNELS üres – agent válaszolhat minden csatornában (teszt mód).")
@@ -41,23 +41,49 @@ if not AGENT_ALLOWED_CHANNELS:
 # Wake szavak (mention mellett)
 WAKE_WORDS = [w.lower() for w in _csv_list(os.getenv("WAKE_WORDS", "isero,x"))]
 
-# Napi token limit (egyszerű, best-effort becslés) és cooldown
+# Napi token limit + cooldown
 AGENT_DAILY_TOKEN_LIMIT = int(os.getenv("AGENT_DAILY_TOKEN_LIMIT", "20000"))
 AGENT_REPLY_COOLDOWN_SECONDS = int(os.getenv("AGENT_REPLY_COOLDOWN_SECONDS", "20"))
 
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
-# Max válasz hossz (Discord 2000 limit alatt maradunk)
-MAX_REPLY_CHARS = 1900
+# Válasz hosszak
+MAX_REPLY_CHARS_STRICT = 300     # célzott, rövid stílus
+MAX_REPLY_CHARS_DISCORD = 1900   # kemény felső korlát (2000 alatt maradunk)
+
+# Profanity – az agent NEM reagáljon profán üzenetre (átadjuk a moderátornak)
+PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 
 
 # ----------------------------
-# Segéd: egyszerű token-becslés
+# Segédek
 # ----------------------------
 
 def approx_token_count(text: str) -> int:
     # durva becslés (4 char ~ 1 token)
     return max(1, len(text) // 4)
+
+def clamp_msg(text: str) -> str:
+    """Először rövid stílus (~300), aztán kemény 1900 korlát."""
+    t = text.strip()
+    if len(t) > MAX_REPLY_CHARS_STRICT:
+        t = t[:MAX_REPLY_CHARS_STRICT].rstrip() + "…"
+    if len(t) > MAX_REPLY_CHARS_DISCORD:
+        t = t[:MAX_REPLY_CHARS_DISCORD].rstrip() + "…"
+    return t
+
+def contains_profane(text: str) -> bool:
+    if not PROFANITY_WORDS:
+        return False
+    low = text.lower()
+    # egyszerű tartalmazás – az obfuszkált formákat nem vállaljuk itt
+    for w in PROFANITY_WORDS:
+        if not w:
+            continue
+        # szóhatár-közeli egyezés előnyben
+        if re.search(rf"(^|\W){re.escape(w)}(\W|$)", low):
+            return True
+    return False
 
 
 # ----------------------------
@@ -98,7 +124,7 @@ async def call_openai_chat(messages: list[dict], model: str, timeout_s: float = 
 # ----------------------------
 
 class AgentGate(commands.Cog):
-    """Mention/Wake kapu, napi keret, cooldown; biztonságos válasz-küldés."""
+    """Mention/Wake kapu, napi keret, cooldown; biztonságos válasz-küldés; profán üzenetek kihagyása."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -140,7 +166,6 @@ class AgentGate(commands.Cog):
         # Wake words?
         content = (message.content or "").lower()
         for w in WAKE_WORDS:
-            # szó elején/szóközzel, vagy egyszerű tartalmazás
             if re.search(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", content):
                 return True
         return False
@@ -154,11 +179,8 @@ class AgentGate(commands.Cog):
 
     async def _safe_send_reply(self, message: discord.Message, text: str):
         """Biztonságos küldés: reference, de ha 50035, akkor sima send."""
-        text = text.strip()
-        if len(text) > MAX_REPLY_CHARS:
-            text = text[:MAX_REPLY_CHARS] + "…"
+        text = clamp_msg(text)
 
-        # Próbáljuk meg referenciával – ne bukjon el, ha eltűnt a source.
         ref = message.to_reference(fail_if_not_exists=False)
         try:
             await message.channel.send(
@@ -189,18 +211,29 @@ class AgentGate(commands.Cog):
         if not self._is_allowed_channel(message.channel):
             return
 
-        # 3) Mentions / wake words kapu
+        raw = (message.content or "").strip()
+        low = raw.lower()
+
+        # 3) PROFANITY GUARD – agent hallgasson, ha trágár (a moderáció intézi)
+        if contains_profane(low):
+            log.info("Profanity észlelve (agent csendben marad): %s", raw[:120])
+            return
+
+        # 4) Mentions / wake words kapu
         if not self._is_wake(message):
             return
 
-        # 4) Cooldown (owner kivétel)
+        # 5) Cooldown (owner kivétel)
         if message.author.id != OWNER_ID and not self._cooldown_ok(message.author.id):
             return
 
-        # 5) Prompt készítés
-        user_text = (message.content or "").strip()
-        # vegyük le a botneveket / wake szavakat a prompt elejéről, hogy tisztább legyen
-        lowered = user_text.lower()
+        # 6) Spec: "ping/pingel" → pong (LLM megkerülése, azonnali válasz)
+        if re.search(r"\bping(el|elsz|elek|etek|etni)?\b", low):
+            await self._safe_send_reply(message, "pong")
+            return
+
+        # 7) Prompt tisztítás (vegyük le a botnevet/wake szót)
+        lowered = low
         for w in WAKE_WORDS:
             lowered = re.sub(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", " ", lowered)
         if self.bot.user:
@@ -208,18 +241,19 @@ class AgentGate(commands.Cog):
             lowered = lowered.replace(mention, " ")
         user_prompt = re.sub(r"\s+", " ", lowered).strip()
         if not user_prompt:
-            user_prompt = (message.content or "").strip()
+            user_prompt = raw
 
-        # 6) Token keret check (durva becslés)
+        # 8) Token keret check (durva becslés)
         est = approx_token_count(user_prompt) + 150  # + válaszkeret
         if not self._check_and_book_tokens(est):
-            await self._safe_send_reply(message, "Napi AI-keretünk most elfogyott. Próbáld meg később. 🙏")
+            await self._safe_send_reply(message, "A napi AI-keret most elfogyott. Próbáld később. 🙏")
             return
 
-        # 7) OpenAI hívás
+        # 9) OpenAI hívás (rövid, laza hangnem)
         system_msg = (
-            "You are ISERO agent. Be concise (≤300 chars if possible). "
-            "Hungarian-friendly tone, casual, helpful. Avoid unsafe content."
+            "You are ISERO agent. Answer in Hungarian if user writes Hungarian. "
+            "Be concise and casual, ≤300 characters. No tagging. "
+            "If the ask is vague, ask one short clarifying question."
         )
         messages = [
             {"role": "system", "content": system_msg},
@@ -227,7 +261,7 @@ class AgentGate(commands.Cog):
         ]
 
         model = OPENAI_MODEL
-        # Egyszerű szabály: ownernek engedjük a heavy modellt @mention esetén
+        # Owner mentionre engedjük a heavy modellt
         if message.author.id == OWNER_ID and self.bot.user and self.bot.user.mentioned_in(message):
             model = OPENAI_MODEL_HEAVY
 
@@ -239,10 +273,10 @@ class AgentGate(commands.Cog):
             return
         except Exception as e:
             log.exception("Váratlan AI hiba: %s", e)
-            await self._safe_send_reply(message, "Valami váratlan történt. Jelentem a staffnak. ⚠️")
+            await self._safe_send_reply(message, "Váratlan hiba történt. Jelentem a staffnak. ⚠️")
             return
 
-        # 8) Biztonságos küldés (50035 fix)
+        # 10) Biztonságos küldés
         try:
             await self._safe_send_reply(message, reply_text)
         except Exception as e:
