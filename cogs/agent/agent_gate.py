@@ -1,150 +1,164 @@
 # cogs/agent/agent_gate.py
-
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
-from datetime import datetime, timezone
+import re
+from typing import Tuple
 
 import discord
 from discord.ext import commands
-
 from openai import OpenAI
 
 from config import (
     OPENAI_API_KEY,
     OPENAI_MODEL,
-    OPENAI_MODEL_HEAVY,          # opcionális, ha később váltani akarsz
+    OPENAI_MODEL_HEAVY,
     AGENT_DAILY_TOKEN_LIMIT,
     AGENT_ALLOWED_CHANNELS,
-    OWNER_ID,
-    GUILD_ID,
-    OPENAI_DEFAULT_ARGS,
+    ALLOW_STAFF_FREESPEECH,
+    STAFF_ROLE_ID,
+    STAFF_EXTRA_ROLE_IDS,
 )
 
 log = logging.getLogger("isero.agent")
 
-SYSTEM_PROMPT = (
-    "You are ISERO, a helpful, concise Discord assistant. "
-    "Answer briefly (2–6 sentences), be friendly, and avoid policy violations. "
-    "If the user asks for server rules or ticket help, give actionable steps."
+SYSTEM_BASE = (
+    "Te ISERO A vagy, a szerver barátságos segítője. "
+    "Válaszolj tömören, érthetően, alapból magyarul (vagy amilyen nyelven a felhasználó ír)."
 )
 
-def _today_key() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 class AgentGate(commands.Cog):
-    """Kapunyitó az üzenet-szintű AI válaszokhoz (on_message)."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # napi token számláló (durva sapka, processz-szintű; restartkor nullázódik)
-        self._day = _today_key()
-        self._tokens_used = 0
 
-        # OpenAI kliens (az openai==1.x csomag szerint)
-        # Ha az OPENAI_API_KEY üres, a lib az ENV-ből is felveszi.
+        # OpenAI kliens – ha az api_key None, akkor környezeti változóból olvassa.
         self.client = OpenAI(api_key=OPENAI_API_KEY or None)
 
-        model = OPENAI_MODEL or "gpt-4o-mini"
-        log.info("[AgentGate] ready. Model=%s, Limit/24h=%s tokens", model, AGENT_DAILY_TOKEN_LIMIT)
+        # Modellek
+        self.model_default: str = OPENAI_MODEL or "gpt-4o-mini"
+        self.model_heavy: str = OPENAI_MODEL_HEAVY or self.model_default
 
-    # ---- Segédek ----
+        # Napi token limit (durva sapka, a tényleges használat API usage-ből)
+        self.limit_per_day: int = AGENT_DAILY_TOKEN_LIMIT
 
-    def _reset_if_new_day(self) -> None:
-        today = _today_key()
+        # Opcionális csatorna-szűrő
+        self.allowed_channels = set(AGENT_ALLOWED_CHANNELS or [])
+
+        # Napi számláló
+        self._used_today = 0
+        self._day = dt.date.today()
+
+        log.info(
+            "[AgentGate] ready. Model=%s, Limit/24h=%s tokens",
+            self.model_default,
+            self.limit_per_day,
+        )
+
+    # ---------- belső utilok ----------
+
+    def _rollover_if_new_day(self) -> None:
+        today = dt.date.today()
         if today != self._day:
             self._day = today
-            self._tokens_used = 0
-            log.info("[AgentGate] Daily token counter reset.")
+            self._used_today = 0
 
-    def _within_budget(self) -> bool:
-        self._reset_if_new_day()
-        return self._tokens_used < AGENT_DAILY_TOKEN_LIMIT
+    def _estimate_tokens(self, text: str) -> int:
+        # gyors, óvatos becslés: ~4 karakter / token
+        return max(1, int(len(text) / 4) + 3)
 
-    def _allowed_channel(self, channel_id: int) -> bool:
-        if not AGENT_ALLOWED_CHANNELS:
+    def _may_speak_in(self, channel: discord.abc.GuildChannel) -> bool:
+        # ha nincs megadva lista -> mindenhol válaszolhat
+        if not self.allowed_channels:
             return True
-        return channel_id in AGENT_ALLOWED_CHANNELS
+        return channel.id in self.allowed_channels
 
-    def _wants_reply(self, message: discord.Message) -> bool:
-        # 1) ne reagáljunk saját magunkra vagy botokra
-        if message.author.bot:
-            return False
-
-        # 2) csatorna-szűrés
-        if not self._allowed_channel(message.channel.id):
-            return False
-
-        # 3) explicit mention vagy kulcsszavak
-        me = message.guild.me if isinstance(message.guild, discord.Guild) else self.bot.user
-        mentioned = False
-        if me and hasattr(message, "mentions"):
-            mentioned = any(m.id == me.id for m in message.mentions)
-
-        if mentioned:
+    def _should_trigger(self, message: discord.Message) -> bool:
+        # mention esetén mindig
+        if self.bot.user and self.bot.user in message.mentions:
             return True
+        # "isero" vagy "isero a" prefixek – case-insensitive
+        lower = message.content.lower().strip()
+        return lower.startswith("isero") or lower.startswith("isero a")
 
-        txt = (message.content or "").strip().lower()
-        if not txt:
-            return False
+    def _pick_model(self, content: str) -> str:
+        # felülbírálás: !!heavy flag
+        if re.search(r"\b!!heavy\b", content, flags=re.I):
+            return self.model_heavy
+        # nagyobb/technikaibb üzenetekre "heavy"
+        if "```" in content or len(content) > 600:
+            return self.model_heavy
+        return self.model_default
 
-        # egyszerű trigger szavak (teszteléshez)
-        triggers = ("hello", "hi isero", "szia isero", "iseró", "isero")
-        return any(t in txt for t in triggers)
+    async def _chat(self, content: str, *, author: discord.Member | None) -> Tuple[str, int]:
+        """OpenAI hívás – (reply, used_tokens) visszaadása."""
+        model = self._pick_model(content)
 
-    async def _chat(self, user_text: str) -> tuple[str, int]:
-        """OpenAI hívás. Visszaad (reply_text, total_tokens)."""
-        # Alap modell: OPENAI_MODEL; ha később csatorna/role alapján kell másik,
-        # itt lehet feltétel szerint OPENAI_MODEL_HEAVY-t használni.
-        model = OPENAI_MODEL or "gpt-4o-mini"
+        messages = [
+            {"role": "system", "content": SYSTEM_BASE},
+            {"role": "user", "content": content},
+        ]
 
-        resp = self.client.chat.completions.create(
+        # A Python OpenAI kliens szinkron; ezért a hívást threadbe tesszük.
+        resp = await asyncio.to_thread(
+            self.client.chat.completions.create,
             model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_text},
-            ],
-            temperature=0.6,
-            max_tokens=300,   # rövid, de informatív válaszok
+            messages=messages,
+            max_tokens=400,
+            temperature=0.7,
         )
+
         reply = resp.choices[0].message.content or ""
-        usage = getattr(resp, "usage", None)
-        total = getattr(usage, "total_tokens", 0) if usage else 0
-        return reply.strip(), int(total or 0)
+        used = (
+            resp.usage.total_tokens
+            if getattr(resp, "usage", None)
+            else self._estimate_tokens(content) + self._estimate_tokens(reply)
+        )
+        return reply, int(used)
 
-    # ---- Discord esemény ----
+    # ---------- eseményfigyelő ----------
 
-    @commands.Cog.listener("on_message")
+    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # botokat, DM-et hagyjuk
+        if message.author.bot or not isinstance(message.channel, discord.TextChannel):
+            return
+
+        # csatorna-szűrés
+        if not self._may_speak_in(message.channel):
+            return
+
+        # csak akkor indulunk, ha mention vagy "isero..." prefix
+        if not self._should_trigger(message):
+            return
+
+        # stáb kedvezmény a limitre
+        is_staff = False
+        if isinstance(message.author, discord.Member):
+            staff_ids = {rid for rid in [STAFF_ROLE_ID, *(STAFF_EXTRA_ROLE_IDS or [])] if rid}
+            is_staff = any(r.id in staff_ids for r in message.author.roles)
+
+        self._rollover_if_new_day()
+
+        if self._used_today >= self.limit_per_day and not (ALLOW_STAFF_FREESPEECH and is_staff):
+            await message.reply("A napi AI keret betelt. Próbáld meg holnap, vagy kérj stáb engedélyt. 🙏")
+            return
+
         try:
-            # parancs-előfeldolgozás miatt ne zavarjuk a commandokat
-            if message.guild is None:
-                return
-
-            if not self._wants_reply(message):
-                return
-
-            if not self._within_budget():
-                log.warning("[AgentGate] Daily token limit reached: %s/%s",
-                            self._tokens_used, AGENT_DAILY_TOKEN_LIMIT)
-                return
-
-            # egyszerű „gondolkodásjelző”
-            async with message.channel.typing():
-                reply, used = await asyncio.to_thread(self._chat, message.content)
-
-            # token könyvelés
-            self._tokens_used += used or 0
-            log.info("[AgentGate] Replied, +%s tokens (day total: %s/%s)",
-                     used, self._tokens_used, AGENT_DAILY_TOKEN_LIMIT)
-
-            if reply:
-                await message.reply(reply, mention_author=False)
-
+            reply, used = await self._chat(message.content, author=message.author)
         except Exception:
-            log.exception("Exception in AgentGate.on_message")
-            # ne dőljön el a bot – csak loggolunk
+            log.exception("Exception in AgentGate._chat")
+            await message.reply("Hopp, most valami félresikerült az AI hívásnál. Próbáld újra kicsit később.")
+            return
+
+        self._used_today += used
+        try:
+            await message.reply(reply[:2000], mention_author=False)
+        except discord.HTTPException:
+            # fallback, ha a reply nem sikerül
+            await message.channel.send(reply[:2000])
 
 
 async def setup(bot: commands.Bot):
