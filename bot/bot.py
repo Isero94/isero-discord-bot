@@ -1,6 +1,5 @@
 import os
 import asyncio
-import importlib
 import logging
 
 import discord
@@ -9,12 +8,14 @@ from discord.ext import commands
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
 
-INTENTS = discord.Intents.default()
-INTENTS.message_content = True
-INTENTS.members = True
-INTENTS.guilds = True
-INTENTS.reactions = True
+# ---- Intents
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.guilds = True
+intents.reactions = True
 
+# ---- Env
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 
@@ -26,15 +27,15 @@ EXTENSIONS = [
     "cogs.ranks.rolesync",
     "cogs.watchers.lang_watch",
     "cogs.watchers.keyword_watch",
-    # "cogs.adapters.deviantart",  # kikapcsolva
+    "cogs.moderation.profanity_guard",  # <-- fontos
 ]
 
 class Bot(commands.Bot):
     def __init__(self) -> None:
-        super().__init__(command_prefix="!", intents=INTENTS)
+        super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        # COG-ok betöltése biztonságosan
+        # COG-ok betöltése
         for ext in EXTENSIONS:
             try:
                 await self.load_extension(ext)
@@ -42,7 +43,7 @@ class Bot(commands.Bot):
             except Exception:
                 log.exception(f"Failed to load {ext}")
 
-        # App parancsok szinkronizálása GUILD-re (instant)
+        # App parancsok gyors szinkron
         try:
             if GUILD_ID:
                 await self.tree.sync(guild=discord.Object(id=GUILD_ID))
@@ -57,11 +58,11 @@ class Bot(commands.Bot):
         log.info(f"Logged in as {self.user} ({self.user.id})")
 
 async def main():
+    if not TOKEN:
+        raise SystemExit("DISCORD_TOKEN missing in environment.")
     bot = Bot()
     async with bot:
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    if not TOKEN:
-        raise SystemExit("DISCORD_TOKEN missing in environment.")
     asyncio.run(main())
