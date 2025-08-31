@@ -59,13 +59,12 @@ GUILD_ID: Optional[int] = _env_int("GUILD_ID")
 OWNER_ID: Optional[int] = _env_int("OWNER_ID")
 
 OPENAI_API_KEY: str = _env_str("OPENAI_API_KEY")
-
-# A fő csevegő modell neve. (Pl.: "gpt-4o-mini")
 OPENAI_MODEL: str = _env_str("OPENAI_MODEL", "gpt-4o-mini")
 
-# NÉV, AMIT AZ AGENT KÓD VÁR:
-# Ha nincs külön megadva, ugyanaz, mint az OPENAI_MODEL.
+# Kompat aliasok (a cog jelenleg ezeket importálja)
+# Ha nincs külön megadva, essen vissza az OPENAI_MODEL-re.
 OPENAI_MODEL_BASE: str = _env_str("OPENAI_MODEL_BASE", OPENAI_MODEL)
+OPENAI_MODEL_HEAVY: str = _env_str("OPENAI_MODEL_HEAVY", OPENAI_MODEL)
 
 # Agent napi token limit (összes userre, durva sapka)
 AGENT_DAILY_TOKEN_LIMIT: int = _env_int("AGENT_DAILY_TOKEN_LIMIT", 20000) or 20000
@@ -82,14 +81,14 @@ STAFF_EXTRA_ROLE_IDS: list[int] = _env_csv_int("STAFF_EXTRA_ROLE_IDS")
 
 # Ticket rendszerhez (ha a cog igényli ezeket)
 TICKET_HUB_CHANNEL_ID: Optional[int] = _env_int("TICKET_HUB_CHANNEL_ID")
-TICKETS_CATEGORY_ID: Optional[int] = _env_int("TICKETS_CATEGORY_ID")
+TICKETS_CATEGORY_ID: Optional[int] = _env_int("CATEGORY_TICKETS")  # név a Render ENV-hez igazítva
 ARCHIVE_CATEGORY_ID: Optional[int] = _env_int("ARCHIVE_CATEGORY_ID")
 TICKET_COOLDOWN_SECONDS: int = _env_int("TICKET_COOLDOWN_SECONDS", 20) or 20
 
-# Staff „szólásszabadság” (watchereknél/agentnél finomításokhoz)
+# Staff „szólásszabadság” finomításokhoz
 ALLOW_STAFF_FREESPEECH: bool = _env_bool("ALLOW_STAFF_FREESPEECH", True)
 
-# Adatbázis (PlayerDB) – ha külön modul használja
+# Adatbázis (PlayerDB)
 DATABASE_URL: str = _env_str("DATABASE_URL")
 
 # ---- Profanity / toxicity pontozás (egyelőre csak score gyűjtés) ----
@@ -99,12 +98,12 @@ PROFANITY_STAGE2_POINTS: int = _env_int("PROFANITY_STAGE2_POINTS", 10) or 10
 PROFANITY_STAGE3_POINTS: int = _env_int("PROFANITY_STAGE3_POINTS", 20) or 20
 
 # ---- Sentiment keretek (marketing/watcherek finomhangolásához) ----
-# 0.0–1.0 skálán gondolkodunk; ezek csak példák, minden felülírható ENV-ből.
+# 0.0–1.0 skálán gondolkodunk; ezek csak példák, ENV-ből felülírhatók.
 SENTIMENT_NEG_HARD_BLOCK: float = float(_env_str("SENTIMENT_NEG_HARD_BLOCK", "0.05"))
 SENTIMENT_NEG_SOFT_NOTE: float = float(_env_str("SENTIMENT_NEG_SOFT_NOTE", "0.15"))
 SENTIMENT_POS_PROMO_HINT: float = float(_env_str("SENTIMENT_POS_PROMO_HINT", "0.70"))
 
 # Kényelmi csomag OpenAI híváshoz (ha a kód így várja)
 OPENAI_DEFAULT_ARGS = {
-    "model": OPENAI_MODEL_BASE,
+    "model": OPENAI_MODEL,
 }
