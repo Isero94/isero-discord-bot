@@ -1,37 +1,40 @@
 # cogs/watchers/sentiment_watch.py
+from __future__ import annotations
+import logging
 import re
-import discord
 from discord.ext import commands
+import discord
 from storage.playercard import PlayerCardStore
 
-POS = {"köszi","köszönöm","szuper","remek","tetszik","imádom","love","great","awesome","wow"}
-NEG = {"szar","fos","utálom","unalmas","idegesítő","borzalom","hate","terrible","shit","fuck"}
+log = logging.getLogger("watch.sentiment")
 
-WORD = re.compile(r"\w+", re.UNICODE)
+POS = {"király","nagyon jó","imádom","szupi","szuper","csodás","köszi","köszönöm","tetszik","érdekel"}
+NEG = {"utálom","szar","sz@r","fos","dühös","ideges","fáradt","unalmas","nem érdekel","rossz","frusztrált"}
+
+def _score(text: str) -> float:
+    t = text.lower()
+    pos = sum(1 for w in POS if re.search(rf"\b{re.escape(w)}\b", t))
+    neg = sum(1 for w in NEG if re.search(rf"\b{re.escape(w)}\b", t))
+    if pos == neg == 0:
+        return 0.0
+    val = (pos - neg) / max(1, (pos + neg))
+    return max(-1.0, min(1.0, val))
 
 class SentimentWatch(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @commands.Cog.listener()
-    async def on_message(self, msg: discord.Message):
-        if msg.author.bot or not msg.guild:
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.content:
             return
-        text = (msg.content or "").lower()
-        if not text:
+        s = _score(message.content)
+        if s == 0.0:
             return
-
-        pos = sum(1 for w in WORD.findall(text) if w in POS)
-        neg = sum(1 for w in WORD.findall(text) if w in NEG)
-        if pos == 0 and neg == 0:
-            return
-
-        val = (pos - neg) / max(1, (pos + neg))
-        # gördülő átlag: 0.7 súly a régi értékre
-        card = await PlayerCardStore.get_card(msg.author.id)
-        card.mood = 0.7*card.mood + 0.3*val
-        await PlayerCardStore.upsert_card(card)
-        await PlayerCardStore.add_signal(msg.author.id, "sentiment", float(val), {"pos":pos,"neg":neg})
+        await PlayerCardStore.ensure_player(message.author.id)
+        await PlayerCardStore.update_mood(message.author.id, s)
+        await PlayerCardStore.add_signal(message.author.id, "sentiment", s, {"text_len": len(message.content)})
+        log.debug("sentiment %.2f by %s", s, message.author.id)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SentimentWatch(bot))
