@@ -1,272 +1,257 @@
+# cogs/moderation/profanity_guard.py
+from __future__ import annotations
+
+import json
 import os
 import re
-import asyncio
-import datetime as dt
-from typing import Dict, List
+from datetime import timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
+# opcionális PlayerCard integráció (ha nincs modul, a kód megy tovább helyi JSON-nal)
+try:
+    from storage.playercard import PlayerCardStore as _PCS  # type: ignore
+    _HAS_PC = True
+except Exception:
+    _PCS = None  # type: ignore
+    _HAS_PC = False
 
-def _csv_ints(name: str) -> List[int]:
-    raw = os.getenv(name, "") or ""
-    out = []
-    for part in raw.split(","):
-        s = part.strip()
-        if s.isdigit():
-            out.append(int(s))
-    return out
+STORAGE = Path("storage")
+STORAGE.mkdir(exist_ok=True, parents=True)
+SCORES_FILE = STORAGE / "profanity_scores.json"
 
-def _csv_strs(name: str) -> List[str]:
-    raw = os.getenv(name, "") or ""
-    return [p.strip() for p in raw.split(",") if p.strip()]
+DEFAULT_WORDS = [
+    "kurva","kurvázik","geci","fasz","faszom","picsa","pina","anyád","buzi","bazdmeg","szar",
+    "fuck","fucking","fucked","shit","bitch","dick","ass","asshole","cunt","pussy","jerk","bullshit"
+]
 
+def load_scores() -> Dict[str, int]:
+    if SCORES_FILE.exists():
+        try:
+            return json.loads(SCORES_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
 
-def _build_regex_piece(word: str) -> str:
-    """
-    A profanity listában a '*' jokerként szerepelhet a szóban lévő
-    nem-betű karakterekre. Példa: 'k*rva' illeszkedik 'k*rva', 'k.rva', 'k rva' stb.
-    """
-    pieces = []
-    for ch in word:
-        if ch == "*":
-            pieces.append(r"[\W_]*?")
-        else:
-            pieces.append(re.escape(ch))
-    core = "".join(pieces)
-    # szóhatár-érzékeny, case-insensitive
-    return rf"(?<!\w){core}(?!\w)"
+def save_scores(data: Dict[str, int]) -> None:
+    try:
+        SCORES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
+def get_env_int(key: str, default: int) -> int:
+    try:
+        return int(os.getenv(key, str(default)).strip())
+    except Exception:
+        return default
 
-def _star_out(match: re.Match) -> str:
-    token = match.group(0)
-    # tartsuk meg az első és utolsó alfanumerikus karaktert, a többit csillag
-    letters = [c for c in token if c.isalnum()]
-    if len(letters) <= 2:
+def build_word_pattern(words: List[str]) -> re.Pattern:
+    opts = [re.escape(w.strip()) for w in words if w.strip()]
+    if not opts:
+        opts = [re.escape(w) for w in DEFAULT_WORDS]
+    core = "|".join(opts)
+    return re.compile(rf"(?i)\b(?:{core})\b", re.UNICODE)
+
+def censor_token(token: str) -> str:
+    if len(token) <= 2:
         return "*" * len(token)
+    return token[0] + ("*" * (len(token) - 2)) + token[-1]
 
-    # maszk: első+utolsó betű marad, közte csillagok, a nem-betű karaktereket hagyjuk ott ahol voltak
-    res = []
-    idx_letter = 0
-    first_kept = letters[0]
-    last_kept = letters[-1]
-    stars_to_use = max(0, len(letters) - 2)
-
-    # felépítjük a maszkot betűnként
-    placed_first = False
-    placed_stars = 0
-    for c in token:
-        if c.isalnum():
-            if not placed_first:
-                res.append(first_kept)
-                placed_first = True
-            elif placed_stars < stars_to_use:
-                res.append("*")
-                placed_stars += 1
-            else:
-                res.append(last_kept)
-        else:
-            res.append(c)
-    return "".join(res)
-
+def soft_censor_text(text: str, pat: re.Pattern) -> tuple[str, int]:
+    matches = list(pat.finditer(text))
+    if not matches:
+        return text, 0
+    res, last = [], 0
+    for m in matches:
+        res.append(text[last:m.start()])
+        res.append(censor_token(m.group(0)))
+        last = m.end()
+    res.append(text[last:])
+    return "".join(res), len(matches)
 
 class ProfanityGuard(commands.Cog):
-    """Cenzúra + pontozás + timeout/mute."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.scores: Dict[str, int] = load_scores()
 
-        # --- Env
-        self.owner_id = int(os.getenv("OWNER_ID", "0"))
-        self.staff_role_id = int(os.getenv("STAFF_ROLE_ID", "0"))
-        self.staff_extra_roles = _csv_ints("STAFF_EXTRA_ROLE_IDS")
+        words_env = os.getenv("PROFANITY_WORDS", "")
+        words = DEFAULT_WORDS if not words_env.strip() else [w.strip() for w in words_env.split(",")]
+        self.word_pat = build_word_pattern(words)
 
-        self.allow_staff_freespeech = (os.getenv("ALLOW_STAFF_FREESPEECH", "false").lower() == "true")
+        self.free_per_msg = get_env_int("PROFANITY_FREE_WORDS_PER_MSG", 2)
+        self.lvl1 = get_env_int("PROFANITY_LVL1_THRESHOLD", 5)
+        self.lvl2 = get_env_int("PROFANITY_LVL2_THRESHOLD", 8)
+        self.lvl3 = get_env_int("PROFANITY_LVL3_THRESHOLD", 11)
+        self.to_min_l2 = get_env_int("PROFANITY_TIMEOUT_MIN_LVL2", 40)
+        self.to_min_l3 = get_env_int("PROFANITY_TIMEOUT_MIN_LVL3", 0)
 
-        self.free_words_per_msg = int(os.getenv("PROFANITY_FREE_WORDS_PER_MSG", "2"))
-        self.lvl1_threshold = int(os.getenv("PROFANITY_LVL1_THRESHOLD", "5"))
-        self.lvl2_threshold = int(os.getenv("PROFANITY_LVL2_THRESHOLD", "8"))
-        self.lvl3_threshold = int(os.getenv("PROFANITY_LVL3_THRESHOLD", "11"))
+        self.allow_staff_freespeech = os.getenv("ALLOW_STAFF_FREESPEECH", "false").lower() == "true"
+        self.owner_id = int(os.getenv("OWNER_ID", "0") or "0")
+        self.use_webhook = os.getenv("USE_WEBHOOK_MIMIC", "true").lower() == "true"
 
-        self.timeout_lvl2_min = int(os.getenv("PROFANITY_TIMEOUT_MIN_LVL2", "40"))
-        self.timeout_lvl3_min = int(os.getenv("PROFANITY_TIMEOUT_MIN_LVL3", "0"))  # 0 => végleges (Muted szerep)
+        self.log_ch_id = int(os.getenv("CHANNEL_MOD_LOGS", "0") or "0")
+        self._webhooks: Dict[int, discord.Webhook] = {}
 
-        self.mute_role_id = int(os.getenv("MUTE_ROLE_ID", "0"))  # új env!
+    # ---------- belső segédek ----------
 
-        self.mod_logs_id = int(os.getenv("CHANNEL_MOD_LOGS", "0"))
-        self.general_logs_id = int(os.getenv("CHANNEL_GENERAL_LOGS", "0"))
+    def _score_key(self, guild_id: int, user_id: int) -> str:
+        return f"{guild_id}:{user_id}"
 
-        self.use_webhook_mimic = (os.getenv("USE_WEBHOOK_MIMIC", "true").lower() == "true")
+    def add_points_local(self, guild_id: int, user_id: int, points: int) -> int:
+        key = self._score_key(guild_id, user_id)
+        cur = self.scores.get(key, 0) + points
+        self.scores[key] = cur
+        save_scores(self.scores)
+        return cur
 
-        # Szavak + regexek
-        words = _csv_strs("PROFANITY_WORDS")
-        self.patterns = [re.compile(_build_regex_piece(w), re.IGNORECASE) for w in words]
+    async def get_or_create_webhook(self, channel: discord.TextChannel) -> Optional[discord.Webhook]:
+        if not self.use_webhook:
+            return None
+        if channel.id in self._webhooks and self._webhooks[channel.id].token:
+            return self._webhooks[channel.id]
+        try:
+            hooks = await channel.webhooks()
+            hook = next((h for h in hooks if h.name == "ISERO Relay"), None)
+            if hook is None:
+                hook = await channel.create_webhook(name="ISERO Relay", reason="Profanity relay")
+            self._webhooks[channel.id] = hook
+            return hook
+        except Exception:
+            return None
 
-        # Egyszerű ponttábla memóriában (user_id -> pont)
-        self.points: Dict[int, int] = {}
-
-    # ---------- Helpers
-
-    def _is_staff(self, member: discord.Member) -> bool:
-        if member.guild.owner_id == member.id or member.id == self.owner_id:
+    def exempt_from_punish(self, member: discord.Member) -> bool:
+        # botok + owner + „Manage Guild” jog
+        if member.bot:
             return True
-        role_ids = {r.id for r in member.roles}
-        if self.staff_role_id and self.staff_role_id in role_ids:
+        if self.owner_id and member.id == self.owner_id:
             return True
-        if any(rid in role_ids for rid in self.staff_extra_roles):
+        if member.guild_permissions.manage_guild or member.top_role.permissions.manage_guild:
             return True
         return False
 
-    async def _get_webhook(self, channel: discord.TextChannel) -> discord.Webhook | None:
-        try:
-            hooks = await channel.webhooks()
-            for h in hooks:
-                if h.name == "ISERO Censor":
-                    return h
-            return await channel.create_webhook(name="ISERO Censor", reason="Censor webhook")
-        except discord.Forbidden:
-            return None
-
-    def _censor_and_count(self, content: str) -> tuple[str, int]:
-        hits = 0
-        censored = content
-        for pat in self.patterns:
-            # count találatok
-            for _ in pat.finditer(censored):
-                hits += 1
-            # csillagozás
-            censored = pat.sub(_star_out, censored)
-        return censored, hits
-
-    async def _log(self, guild: discord.Guild, text: str):
-        if self.mod_logs_id:
-            ch = guild.get_channel(self.mod_logs_id)
-            if isinstance(ch, discord.TextChannel):
-                await ch.send(text)
-
-    async def _timeout_member(self, member: discord.Member, minutes: int, reason: str):
-        try:
-            until = discord.utils.utcnow() + dt.timedelta(minutes=minutes)
-            await member.timeout(until, reason=reason)
-        except discord.Forbidden:
-            pass
-
-    async def _mute_member_forever(self, member: discord.Member, reason: str):
-        if not self.mute_role_id:
-            # ha nincs megadva mute szerep, fallback egy hosszú timeoutjára (28 nap a max)
-            await self._timeout_member(member, 28 * 24 * 60, reason)
+    async def log(self, guild: discord.Guild, text: str, *, embed: Optional[discord.Embed] = None):
+        if not self.log_ch_id:
             return
-        role = member.guild.get_role(self.mute_role_id)
-        if role:
+        ch = guild.get_channel(self.log_ch_id)
+        if ch:
             try:
-                await member.add_roles(role, reason=reason)
-            except discord.Forbidden:
+                await ch.send(text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
                 pass
 
-    # ---------- Events
+    # ---------- esemény ----------
 
-    @commands.Cog.listener("on_message")
-    async def guard_message(self, message: discord.Message):
-        # ne fussunk DM-ben vagy webhook-üzeneten
-        if not message.guild or message.webhook_id:
+    @commands.Cog.listener())
+    async def on_message(self, message: discord.Message):
+        if not message.guild or message.author.bot:
             return
 
-        # saját üzenet: csak szerkesztünk (nincs törlés-webhook)
-        if message.author == self.bot.user:
-            new, hits = self._censor_and_count(message.content)
-            if hits > 0 and new != message.content:
-                try:
-                    await message.edit(content=new)
-                except discord.Forbidden:
-                    pass
+        me: discord.Member = message.guild.me  # type: ignore
+        if not me.guild_permissions.manage_messages:
             return
 
-        # ha nincs tartalom, kilépünk
-        if not message.content:
+        original = message.content or ""
+        censored, count = soft_censor_text(original, self.word_pat)
+        if count == 0:
             return
 
-        censored, hits = self._censor_and_count(message.content)
-        if hits == 0:
-            return
-
-        member: discord.Member = message.author  # type: ignore
-        guild = message.guild
-
-        # --- Cenzúra megjelenítése a csatornában
-        if self.use_webhook_mimic and isinstance(message.channel, discord.TextChannel):
-            wh = await self._get_webhook(message.channel)
-            if wh:
-                try:
-                    await wh.send(
-                        content=censored,
-                        username=member.display_name,
-                        avatar_url=member.display_avatar.with_size(128).url if member.display_avatar else None,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                    await message.delete()
-                except discord.Forbidden:
-                    # ha nincs jog törölni, legalább reagáljunk
-                    pass
-
-        # --- Pontszámítás
-        add_points = max(0, hits - self.free_words_per_msg)
-
-        is_staff = self._is_staff(member)
-        exempt_from_punish = (is_staff and self.allow_staff_freespeech) or member.bot
-
-        if add_points > 0 and not exempt_from_punish:
-            total = self.points.get(member.id, 0) + add_points
-            self.points[member.id] = total
-
-            await self._log(guild, f"⚠️ **{member}** kapott **{add_points}** pontot (össz: {total}) a trágárságért.")
-
-            # Szintek
-            if total >= self.lvl3_threshold:
-                # LVL3 – végleges mute (ha 0 perc a lvl3 env)
-                if self.timeout_lvl3_min <= 0:
-                    await self._mute_member_forever(member, reason="Profanity Level 3 – manual unmute required")
-                    await self._log(guild, f"⛔ **{member}** LVL3 – végleges némítás (Muted szerep). Feloldás kézzel /unmute.")
-                else:
-                    await self._timeout_member(member, self.timeout_lvl3_min, "Profanity Level 3")
-                    await self._log(guild, f"⛔ **{member}** LVL3 – timeout {self.timeout_lvl3_min} perc.")
-            elif total >= self.lvl2_threshold:
-                await self._timeout_member(member, self.timeout_lvl2_min, "Profanity Level 2")
-                await self._log(guild, f"🚫 **{member}** LVL2 – timeout {self.timeout_lvl2_min} perc.")
-            elif total >= self.lvl1_threshold:
-                await self._log(guild, f"⚠️ **{member}** LVL1 – figyelmeztetés.")
-
-    # ---------- Commands
-
-    @app_commands.command(name="unmute", description="Feloldja a végleges némítást (PG LVL3).")
-    @app_commands.describe(user="Kit oldjunk fel?")
-    async def unmute(self, interaction: discord.Interaction, user: discord.Member):
-        if not interaction.user.guild_permissions.manage_channels and not interaction.user.guild_permissions.moderate_members:
-            return await interaction.response.send_message("Nincs jogod ehhez.", ephemeral=True)
-
-        removed = False
-        if self.mute_role_id:
-            role = interaction.guild.get_role(self.mute_role_id) if interaction.guild else None
-            if role and role in user.roles:
-                try:
-                    await user.remove_roles(role, reason="Manual unmute")
-                    removed = True
-                except discord.Forbidden:
-                    pass
-
+        # üzenet törlése
         try:
-            await user.timeout(None, reason="Manual unmute")
-            removed = True
-        except discord.Forbidden:
+            await message.delete()
+        except Exception:
+            # ha nem tudja törölni, esünk vissza sima send-re (mention nem pingel a none miatt)
+            try:
+                await message.channel.send(f"{message.author.mention} {censored}", allowed_mentions=discord.AllowedMentions.none())
+            finally:
+                return
+
+        # webhook / fallback + csatolmány forward
+        try:
+            hook = await self.get_or_create_webhook(message.channel)  # type: ignore
+            files = []
+            for a in message.attachments:
+                try:
+                    files.append(await a.to_file())
+                except Exception:
+                    pass
+            if hook:
+                await hook.send(
+                    content=censored,
+                    username=message.author.display_name,
+                    avatar_url=message.author.display_avatar.url,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    files=files or None
+                )
+            else:
+                await message.channel.send(
+                    f"**{message.author.display_name}:** {censored}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                    files=files or None
+                )
+        except Exception:
             pass
 
-        if removed:
-            await interaction.response.send_message(f"Feloldva: {user.mention}", ephemeral=True)
-            if interaction.guild:
-                await self._log(interaction.guild, f"✅ **{user}** unmute (kézi).")
-        else:
-            await interaction.response.send_message("Nem sikerült feloldani (hiányzó jog?).", ephemeral=True)
+        # pontozás – ingyenes keret levonása
+        effective = max(0, count - self.free_per_msg)
+        member: discord.Member = message.author  # type: ignore
+        exempt = self.exempt_from_punish(member)
 
+        # staff/owner kivétel kezelése
+        if self.allow_staff_freespeech and exempt:
+            return
+
+        # owner/staff: nincs pont (csak csillag és log)
+        if exempt:
+            await self.log(message.guild, f"ℹ️ Csillagozva (staff/owner kivétel): {member} in #{message.channel} — {count} találat.")
+            return
+
+        if effective <= 0:
+            await self.log(message.guild, f"ℹ️ Csillagozva (ingyenkeret): {member} in #{message.channel} — {count} találat.")
+            return
+
+        # helyi JSON pontozás
+        total_local = self.add_points_local(message.guild.id, member.id, effective)
+
+        # opcionális PlayerCard frissítés (ha elérhető)
+        if _HAS_PC:
+            try:
+                await _PCS.ensure_player(member.id)  # type: ignore
+                await _PCS.add_profanity_points(member.id, effective, stage_delta=0)  # type: ignore
+                await _PCS.add_signal(member.id, "profanity", float(effective), {"hits": count})  # type: ignore
+            except Exception:
+                pass
+
+        # szintek / akciók
+        lvl = 0
+        if effective >= self.lvl3 or total_local >= self.lvl3:
+            lvl = 3
+        elif effective >= self.lvl2 or total_local >= self.lvl2:
+            lvl = 2
+        elif effective >= self.lvl1 or total_local >= self.lvl1:
+            lvl = 1
+
+        note = f"🔹 {member.mention} kapott **+{effective}** pontot (össz: **{total_local}**)."
+        if lvl == 1:
+            await self.log(message.guild, f"{note} ⚠️ **Figyelmeztetés (1. szint)**.")
+        elif lvl == 2:
+            minutes = max(1, self.to_min_l2)
+            try:
+                await member.timeout(timedelta(minutes=minutes), reason="Profanity L2")
+                await self.log(message.guild, f"{note} ⛔ **Timeout {minutes} perc (2. szint)**.")
+            except Exception:
+                await self.log(message.guild, f"{note} (2. szint) — timeout sikertelen (jog hiányzik?).")
+        elif lvl == 3:
+            minutes = max(1, self.to_min_l3)
+            try:
+                await member.timeout(timedelta(minutes=minutes), reason="Profanity L3")
+                await self.log(message.guild, f"{note} ⛔ **Timeout {minutes} perc (3. szint)**.")
+            except Exception:
+                await self.log(message.guild, f"{note} (3. szint) — timeout sikertelen (jog hiányzik?).")
+        else:
+            await self.log(message.guild, note)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ProfanityGuard(bot))
