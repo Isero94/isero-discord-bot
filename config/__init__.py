@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
+
 def _env_str(name: str, default: str = "") -> str:
     v = os.getenv(name)
     return v.strip() if v else default
+
 
 def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
     v = os.getenv(name)
@@ -18,11 +20,13 @@ def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
     except ValueError:
         return default
 
+
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
     if not v:
         return default
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
 
 def _env_csv_int(name: str) -> List[int]:
     v = os.getenv(name, "")
@@ -37,6 +41,7 @@ def _env_csv_int(name: str) -> List[int]:
             pass
     return out
 
+
 def _env_csv_str(name: str) -> List[str]:
     v = os.getenv(name, "")
     out: List[str] = []
@@ -46,6 +51,7 @@ def _env_csv_str(name: str) -> List[str]:
             out.append(part)
     return out
 
+
 # ---- Alap Discord / OpenAI / adatbázis ----
 
 DISCORD_TOKEN: str = _env_str("DISCORD_TOKEN")
@@ -54,17 +60,17 @@ OWNER_ID: Optional[int] = _env_int("OWNER_ID")
 
 OPENAI_API_KEY: str = _env_str("OPENAI_API_KEY")
 OPENAI_MODEL: str = _env_str("OPENAI_MODEL", "gpt-4o-mini")
-
-# Opcionális „nehéz” modell, ha külön akarod kapcsolni (pl. gpt-4o)
 OPENAI_MODEL_HEAVY: str = _env_str("OPENAI_MODEL_HEAVY", OPENAI_MODEL)
 
 # Agent napi token limit (összes userre, durva sapka)
 AGENT_DAILY_TOKEN_LIMIT: int = _env_int("AGENT_DAILY_TOKEN_LIMIT", 20000) or 20000
 
-# Csak ezekben a csatornákban válaszoljon az Agent (opcionális, CSV ID-k)
+# Csak ezekben a csatornákban válaszoljon az Agent (opcionális)
+# Példa: AGENT_ALLOWED_CHANNELS=123,456,789
+# Ha ÜRES -> minden szövegcsatornában válaszolhat.
 AGENT_ALLOWED_CHANNELS: list[int] = _env_csv_int("AGENT_ALLOWED_CHANNELS")
 
-# NSFW csatornák (pl. tiltott topikok figyeléséhez)
+# NSFW csatornák (pl. tiltott topikok figyeléséhez – ha kell)
 NSFW_CHANNELS: list[int] = _env_csv_int("NSFW_CHANNELS")
 
 # Opcionális staff jogok
@@ -90,16 +96,11 @@ PROFANITY_STAGE2_POINTS: int = _env_int("PROFANITY_STAGE2_POINTS", 10) or 10
 PROFANITY_STAGE3_POINTS: int = _env_int("PROFANITY_STAGE3_POINTS", 20) or 20
 
 # ---- Sentiment keretek (marketing/watcherek finomhangolásához) ----
-# 0.0–1.0 skálán gondolkodunk; ezek csak példák, minden felülírható ENV-ből.
 SENTIMENT_NEG_HARD_BLOCK: float = float(_env_str("SENTIMENT_NEG_HARD_BLOCK", "0.05"))
 SENTIMENT_NEG_SOFT_NOTE: float = float(_env_str("SENTIMENT_NEG_SOFT_NOTE", "0.15"))
 SENTIMENT_POS_PROMO_HINT: float = float(_env_str("SENTIMENT_POS_PROMO_HINT", "0.70"))
 
 # Kényelmi csomag OpenAI híváshoz (ha a kód így várja)
-OPENAI_DEFAULT_ARGS = {"model": OPENAI_MODEL}
-
-# --- Visszafelé kompatibilis aliasok a régi importokhoz ---
-# Régi kód ezt várhatta:
-#   from config import OPENAI_MODEL_BASE, OPENAI_MODEL_HEAVY, OPENAI_DAILY_TOKENS
-OPENAI_MODEL_BASE = OPENAI_MODEL
-OPENAI_DAILY_TOKENS = AGENT_DAILY_TOKEN_LIMIT
+OPENAI_DEFAULT_ARGS = {
+    "model": OPENAI_MODEL,
+}
