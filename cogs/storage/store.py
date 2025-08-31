@@ -1,24 +1,55 @@
-from pathlib import Path
-import json, time
-from typing import Optional, Dict, Any
+# storage/store.py
+from __future__ import annotations
+import os
+import asyncpg
+import logging
 
-class JSONStore:
-    def __init__(self, base="data"):
-        self.base = Path(base)
-        (self.base / "players").mkdir(parents=True, exist_ok=True)
-        (self.base / "commissions").mkdir(parents=True, exist_ok=True)
+log = logging.getLogger("isero.playerdb")
 
-    def get_player(self, user_id: int) -> Optional[Dict[str, Any]]:
-        p = self.base / "players" / f"{user_id}.json"
-        if not p.exists():
-            return None
-        return json.loads(p.read_text(encoding="utf-8"))
+_POOL: asyncpg.Pool | None = None
 
-    def save_player(self, user_id: int, data: Dict[str, Any]):
-        p = self.base / "players" / f"{user_id}.json"
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS players (
+  user_id BIGINT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  first10 BOOLEAN NOT NULL DEFAULT FALSE,
+  rank INT NOT NULL DEFAULT 0,
+  level INT NOT NULL DEFAULT 0,
+  lang_pref TEXT,
+  flags JSONB NOT NULL DEFAULT '{}'::jsonb
+);
 
-    def save_commission(self, data: Dict[str, Any]):
-        ts = int(time.time() * 1000)
-        p = self.base / "commissions" / f"{ts}.json"
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+CREATE TABLE IF NOT EXISTS player_cards (
+  user_id BIGINT PRIMARY KEY REFERENCES players(user_id) ON DELETE CASCADE,
+  prompt_snippet TEXT,
+  persona_tags TEXT[] DEFAULT '{}',
+  scores JSONB NOT NULL DEFAULT '{"activity":0,"helpfulness":0,"marketing":0,"toxicity":0,"trust":0}'::jsonb,
+  mood DOUBLE PRECISION DEFAULT 0,
+  marketing_score INT NOT NULL DEFAULT 0,
+  profanity JSONB NOT NULL DEFAULT '{"points":0,"stage":0}'::jsonb,
+  tokens_today INT NOT NULL DEFAULT 0,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS signals (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  kind TEXT NOT NULL,
+  value DOUBLE PRECISION,
+  meta JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
+async def get_pool() -> asyncpg.Pool:
+    global _POOL
+    if _POOL:
+        return _POOL
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL hiányzik az ENV-ből")
+    _POOL = await asyncpg.create_pool(dsn=db_url, min_size=1, max_size=5)
+    async with _POOL.acquire() as con:
+        await con.execute(SCHEMA)
+    log.info("isero.playerdb: schema ensured.")
+    return _POOL
