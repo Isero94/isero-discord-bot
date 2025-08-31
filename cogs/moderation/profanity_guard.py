@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 import discord
 from discord.ext import commands
 
-# opcionális PlayerCard integráció (ha nincs modul, a kód megy tovább helyi JSON-nal)
+# opcionális PlayerCard integráció (ha nincs modul, a kód akkor is megy tovább)
 try:
     from storage.playercard import PlayerCardStore as _PCS  # type: ignore
     _HAS_PC = True
@@ -144,7 +144,7 @@ class ProfanityGuard(commands.Cog):
 
     # ---------- esemény ----------
 
-    @commands.Cog.listener())
+    @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not message.guild or message.author.bot:
             return
@@ -164,7 +164,10 @@ class ProfanityGuard(commands.Cog):
         except Exception:
             # ha nem tudja törölni, esünk vissza sima send-re (mention nem pingel a none miatt)
             try:
-                await message.channel.send(f"{message.author.mention} {censored}", allowed_mentions=discord.AllowedMentions.none())
+                await message.channel.send(
+                    f"{message.author.mention} {censored}",
+                    allowed_mentions=discord.AllowedMentions.none()
+                )
             finally:
                 return
 
@@ -205,11 +208,17 @@ class ProfanityGuard(commands.Cog):
 
         # owner/staff: nincs pont (csak csillag és log)
         if exempt:
-            await self.log(message.guild, f"ℹ️ Csillagozva (staff/owner kivétel): {member} in #{message.channel} — {count} találat.")
+            await self.log(
+                message.guild,
+                f"ℹ️ Csillagozva (staff/owner kivétel): {member} in #{message.channel} — {count} találat."
+            )
             return
 
         if effective <= 0:
-            await self.log(message.guild, f"ℹ️ Csillagozva (ingyenkeret): {member} in #{message.channel} — {count} találat.")
+            await self.log(
+                message.guild,
+                f"ℹ️ Csillagozva (ingyenkeret): {member} in #{message.channel} — {count} találat."
+            )
             return
 
         # helyi JSON pontozás
