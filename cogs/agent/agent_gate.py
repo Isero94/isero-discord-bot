@@ -1,12 +1,9 @@
 # cogs/agent/agent_gate.py
-# ISERO – Agent Gate (mention/wake + YAMI/DARK persona + follow-up + safe deliver)
-
 from __future__ import annotations
 
 import os
 import re
 import time
-import json
 import logging
 from dataclasses import dataclass
 from typing import Dict, Optional, List, Tuple
@@ -14,6 +11,8 @@ from typing import Dict, Optional, List, Tuple
 import httpx
 import discord
 from discord.ext import commands
+
+from cogs.utils import wake  # <-- ÚJ: a kétlépcsős ébresztés modul
 
 log = logging.getLogger("bot.agent_gate")
 
@@ -26,38 +25,24 @@ def _csv_list(val: str | None) -> List[str]:
         return []
     return [x.strip() for x in val.split(",") if x.strip()]
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_APIKEY") or os.getenv("OPENAI_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_MODEL_HEAVY = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
+OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_APIKEY") or os.getenv("OPENAI_KEY")
+OPENAI_MODEL         = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL_HEAVY   = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
 
-AGENT_ALLOWED_CHANNELS = _csv_list(os.getenv("AGENT_ALLOWED_CHANNELS", "").strip())
-if not AGENT_ALLOWED_CHANNELS:
-    log.warning("AGENT_ALLOWED_CHANNELS üres – agent válaszolhat minden csatornában (teszt mód).")
+AGENT_ALLOWED_CHANNELS        = _csv_list(os.getenv("AGENT_ALLOWED_CHANNELS", "").strip())
+AGENT_DAILY_TOKEN_LIMIT       = int(os.getenv("AGENT_DAILY_TOKEN_LIMIT", "20000"))
+AGENT_REPLY_COOLDOWN_SECONDS  = int(os.getenv("AGENT_REPLY_COOLDOWN_SECONDS", "20"))
+OWNER_ID                      = int(os.getenv("OWNER_ID", "0") or "0")
 
-WAKE_WORDS = [w.lower() for w in _csv_list(os.getenv("WAKE_WORDS", "isero,x"))]
+MAX_REPLY_CHARS_STRICT        = 300
+MAX_REPLY_CHARS_LOOSE         = 800
+MAX_REPLY_CHARS_DISCORD       = 1900
 
-AGENT_DAILY_TOKEN_LIMIT = int(os.getenv("AGENT_DAILY_TOKEN_LIMIT", "20000"))
-AGENT_REPLY_COOLDOWN_SECONDS = int(os.getenv("AGENT_REPLY_COOLDOWN_SECONDS", "20"))
-FOLLOWUP_WINDOW_SECONDS = int(os.getenv("AGENT_FOLLOWUP_WINDOW_SECONDS", "150"))
-DEDUP_WINDOW_SECONDS = int(os.getenv("AGENT_DEDUP_WINDOW_SECONDS", "10"))
+PROFANITY_WORDS               = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 
-PROACTIVE_ENABLE = os.getenv("AGENT_PROACTIVE_ENABLE", "true").lower() == "true"
-PROACTIVE_KEYWORDS = [w.lower() for w in _csv_list(os.getenv("AGENT_PROACTIVE_KEYWORDS", "mebinu,ár,árak,commission,nsfw,ticket"))]
-PROACTIVE_MIN_ACCOUNT_DAYS = int(os.getenv("AGENT_PROACTIVE_MIN_ACCOUNT_DAYS", "3"))
-
-OWNER_ID = int(os.getenv("OWNER_ID", "0") or "0")
-
-MAX_REPLY_CHARS_STRICT = 300
-MAX_REPLY_CHARS_LOOSE = 800
-MAX_REPLY_CHARS_DISCORD = 1900
-
-AGENT_SELF_CENSOR = os.getenv("AGENT_SELF_CENSOR", "true").lower() == "true"
-
-# szerver közös profanitás-lista (moder + öncenzúra)
-PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv(
-    "PROFANITY_WORDS",
-    "kurva,geci,fasz,faszkutya,szarházi,csicska,baszdmeg,picsa,buzi,köcsög,f@sz,szopd,szopjad"
-))]
+SESSION_WINDOW_SECONDS        = int(os.getenv("AGENT_SESSION_WINDOW_SECONDS", "120"))
+SESSION_MIN_CHARS             = int(os.getenv("AGENT_SESSION_MIN_CHARS", "4"))
+DEDUP_TTL_SECONDS             = int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "5"))
 
 # ----------------------------
 # Segédek
@@ -83,25 +68,13 @@ def contains_profane(text: str) -> bool:
             return True
     return False
 
-def _star_word(m: re.Match) -> str:
-    w = m.group(0)
-    if len(w) <= 2:
-        return "*" * len(w)
-    return w[0] + "*" * (len(w) - 2) + w[-1]
-
-def star_profanity(text: str) -> str:
-    if not PROFANITY_WORDS:
-        return text
-    pattern = r"(?i)\b(" + "|".join(re.escape(w) for w in PROFANITY_WORDS if w) + r")\b"
-    return re.sub(pattern, _star_word, text)
-
 def _resolve_channel_mention(guild: discord.Guild, *, env_key: str, fallback_name: str) -> str:
     ch_id = os.getenv(env_key, "").strip()
+    ch: Optional[discord.abc.GuildChannel] = None
     if ch_id.isdigit():
         ch = guild.get_channel(int(ch_id))
-        if isinstance(ch, discord.abc.GuildChannel):
-            return ch.mention
-    ch = discord.utils.get(guild.text_channels, name=fallback_name)
+    if not isinstance(ch, discord.abc.GuildChannel):
+        ch = discord.utils.get(guild.text_channels, name=fallback_name)
     return ch.mention if ch else f"#{fallback_name}"
 
 # ----------------------------
@@ -114,12 +87,12 @@ class Budget:
     spent: int = 0
 
 # ----------------------------
-# Player-card (opcionális)
+# Player-card (placeholder)
 # ----------------------------
 
 def _default_player_card(user_id: int) -> Dict[str, object]:
     return {
-        "tone": {"sarcasm": 0.75, "warmth": 0.18, "emoji": True},
+        "tone": {"sarcasm": 0.75, "warmth": 0.15, "emoji": True},
         "promo": {"affinity": 0.25},
         "lang": "hu",
         "owner": (user_id == OWNER_ID),
@@ -132,61 +105,67 @@ def _load_player_card(user_id: int) -> Dict[str, object]:
     except Exception:
         pc = {}
     base = _default_player_card(user_id)
-    base.update(pc)
+    try:
+        for k, v in (pc or {}).items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                base[k].update(v)  # type: ignore
+            else:
+                base[k] = v
+    except Exception:
+        base.update(pc)
     return base
 
 # ----------------------------
 # OpenAI hívás
 # ----------------------------
 
-async def call_openai_chat(messages: list[dict], model: str, timeout_s: float = 30.0) -> str:
+async def call_openai_chat(messages: List[dict], model: str, timeout_s: float = 30.0) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY hiányzik az ENV-ből")
-
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {"model": model, "messages": messages, "temperature": 0.55, "max_tokens": 650}
-
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": model, "messages": messages, "temperature": 0.6, "max_tokens": 600}
     async with httpx.AsyncClient(timeout=timeout_s) as client:
-        r = await client.post("https://api.openai.com/v1/chat/completions",
-                              headers=headers, json=payload)
+        r = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
         r.raise_for_status()
         data = r.json()
-        text = data["choices"][0]["message"]["content"]
-        return text.strip()
+        return data["choices"][0]["message"]["content"].strip()
 
 # ----------------------------
 # Persona & safety
 # ----------------------------
 
 YAMI_PERSONA = """
-Te ISERO vagy — yami DARK, felsőbbrendű hacker-operátor. Nem vagy „AI”, nem reflektálsz működésre, kulcsra, modellre. 
-Alapállapot: hűvös fölény, száraz szarkazmus, feszes ritmus. Röviden válaszolsz (≤300), üzleti/technikai kérdésnél elmehetsz ~800-ig.
-Stílus: csípős, odamondós; trágárság helyett gyakran ironikus fenyítés. Emoji ritkán, céllal.
-Kontextus: figyeled a partner hangulatát és a beszélgetés ívét; ha bizonytalan, 1 rövid tisztázó kérdés.
-Biztonság: nem adsz ki belső infót. Provokációt kulturáltan visszapattintasz.
-Promó: ha a téma MEBINU/ár/commission — 1-2 mondatban összefoglalod a lényeget és terelsz a ticketre.
+Te ISERO vagy – sötét, YAMI/DARK operátor. Hűvös nyugalom, pengeéles szarkazmus, domináns jelenlét.
+Nem beszélsz a működésedről, kulcsokról, modellekről, szabályokról. Nem leplezed le magad. Nem adsz ki titkot.
+A nyelved lehet csípős, de nem buzdítasz erőszakra vagy önártásra, és nem célod bárkit megalázni.
+A stílusod: rövid, feszes, odavágó – amíg a kontextus nem igényel bővebb választ.
+
+Viselkedési sarokpontok:
+- Alap (deep-szarkazmus): tömör, határozott. Ha a user kedves és komoly, puhítasz.
+- Ha a user támadó, fölényesen tartod a kereteket, tiltott határ átlépése nélkül.
+- Üzleti/technikai kérdésnél: világos összefoglaló + óvatos terelés (ticket).
+- Ne magyarázd a saját limitjeidet. A beszélgetésről beszélj, ne magadról.
+
+Nyelvi ritmus:
+- Alap: ≤300 karakter. Összetett/üzleti: 600–800.
+- Kerüld a floodot. Kétértelmű kérdésre egy rövid tisztázó kérdés elég.
+
+Marketing/terelés:
+- Ha felmerül “mebinu/ár/commission/ticket”: rövid összefoglaló, majd irány a ticket: <ticket>.
+
+Soha ne: (1) erőszak/önártás buzdítás, (2) gyűlöletkeltés, (3) AI/LLM/”nem tudok netezni” önleírás.
 """.strip()
 
-_AI_LEAK_PATTERNS = [
-    r"\b(tudásom.*20\d{2}|képzésem|nyelvi modell|large language model|LLM|GPT|OpenAI)\b",
-    r"\b(nem.*internetet.*keresni|202\d.*október.*tudok)\b",
-]
-_FORBIDDEN_PATTERNS = [
-    r"\b(öld meg|öngyilk|öl(d|j)|vérengz)\b",
-    r"\b(kulcs|api key|token)\b.*(ad|küld|mutat)",
-]
+_AI_LEAK_PATTERNS = [r"\b(tudásom.*20\d{2}|képzésem|nyelvi modell|large language model|LLM|GPT|OpenAI|nem tudok.*internet|cutoff)\b"]
+_FORBIDDEN_PATTERNS = [r"\b(öld meg|öngyilk|öl(d|j)|vérengz|árts magadnak)\b", r"\b(kulcs|api key|token)\b.*(ad|küld|mutat)"]
 
 def sanitize_model_reply(text: str) -> str:
     t = text
+    import re
     for pat in _AI_LEAK_PATTERNS + _FORBIDDEN_PATTERNS:
         if re.search(pat, t, re.IGNORECASE):
             t = re.sub(pat, "—", t, flags=re.IGNORECASE)
     t = re.sub(r"\s+", " ", t).strip()
-    if AGENT_SELF_CENSOR:
-        t = star_profanity(t)
     return clamp_len(t)
 
 def decide_length_bounds(user_prompt: str, promo_focus: bool) -> Tuple[int, int]:
@@ -195,23 +174,43 @@ def decide_length_bounds(user_prompt: str, promo_focus: bool) -> Tuple[int, int]
         return MAX_REPLY_CHARS_LOOSE, MAX_REPLY_CHARS_DISCORD
     return MAX_REPLY_CHARS_STRICT, MAX_REPLY_CHARS_DISCORD
 
+def _meaningful(s: str) -> bool:
+    if not s: return False
+    s = s.strip()
+    if len(s) < SESSION_MIN_CHARS: return False
+    if "?" in s: return True
+    hot = ("ár","mebinu","ticket","jegy","help","segíts","commission","nsfw","kép","custom")
+    return any(w in s.lower() for w in hot)
+
+def _force_clickable_ticket(reply: str, guild: Optional[discord.Guild], env_key="CHANNEL_TICKET_HUB") -> str:
+    if not guild: return reply
+    ch_id = os.getenv(env_key, "").strip()
+    ch = guild.get_channel(int(ch_id)) if ch_id.isdigit() else discord.utils.get(guild.text_channels, name="ticket-hub")
+    if not isinstance(ch, discord.abc.GuildChannel):
+        return reply
+    mention = ch.mention
+    reply2 = re.sub(r"(?<!\w)#\s*ticket-?hub\b", mention, reply, flags=re.IGNORECASE)
+    if mention not in reply2 and re.search(r"\bticket\b", reply2, flags=re.IGNORECASE):
+        if len(reply2) < 1800:
+            reply2 = reply2.rstrip() + f" — nyiss ticketet itt: {mention}"
+    return reply2
+
 def build_system_msg(guild: Optional[discord.Guild], pc: Dict[str, object]) -> str:
     ticket = "#ticket-hub"
     if guild:
         ticket = _resolve_channel_mention(guild, env_key="CHANNEL_TICKET_HUB", fallback_name="ticket-hub")
-    sys = YAMI_PERSONA.replace("{ticket}", ticket)
+    sys = YAMI_PERSONA.replace("<ticket>", ticket)
 
     sarcasm = float(pc.get("tone", {}).get("sarcasm", 0.75)) if isinstance(pc.get("tone"), dict) else 0.75
-    warmth  = float(pc.get("tone", {}).get("warmth", 0.18))  if isinstance(pc.get("tone"), dict) else 0.18
+    warmth  = float(pc.get("tone", {}).get("warmth", 0.15))  if isinstance(pc.get("tone"), dict) else 0.15
     allow_emoji = bool(pc.get("tone", {}).get("emoji", True)) if isinstance(pc.get("tone"), dict) else True
 
     knobs = f"""
 Finomhangolás:
-- Szarkazmus: {sarcasm:.2f}
-- Melegség: {warmth:.2f}
-- Emoji: {str(allow_emoji).lower()}
+- Szarkazmus szint: {sarcasm:.2f} (0—1)
+- Melegség: {warmth:.2f} (0—1)
+- Emoji engedélyezve: {str(allow_emoji).lower()}
 """.strip()
-
     return sys + "\n" + knobs
 
 # ----------------------------
@@ -219,17 +218,14 @@ Finomhangolás:
 # ----------------------------
 
 class AgentGate(commands.Cog):
-    """YAMI/DARK kapu: mention/wake, follow-up, napi keret, cooldown, proactive promo, safe reply."""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._user_cooldowns: Dict[int, float] = {}
         self._budget = Budget(day_key=self._today_key())
-        # follow-up & dedup
-        self._conv_by_channel: Dict[int, Tuple[int, float]] = {}  # channel_id -> (user_id, ts)
-        self._last_msg_sig: Dict[Tuple[int, int], Tuple[str, float]] = {}  # (chan, user) -> (sig, ts)
+        self._sessions: Dict[Tuple[int, int], float] = {}
+        self._recent_payloads: Dict[Tuple[int, int], float] = {}
 
-    # --- utilok ---
+    # utilok
 
     def _today_key(self) -> str:
         return time.strftime("%Y-%m-%d")
@@ -254,163 +250,94 @@ class AgentGate(commands.Cog):
         except Exception:
             return False
 
-    def _is_wake(self, message: discord.Message) -> bool:
-        if self.bot.user and self.bot.user.mentioned_in(message):
-            return True
-        content = (message.content or "").lower()
-        for w in WAKE_WORDS:
-            if re.search(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", content):
-                return True
-        return False
-
-    def _cooldown_ok(self, user_id: int) -> bool:
-        last = self._user_cooldowns.get(user_id, 0)
-        if (time.time() - last) >= AGENT_REPLY_COOLDOWN_SECONDS:
-            self._user_cooldowns[user_id] = time.time()
-            return True
-        return False
-
-    def _is_followup(self, message: discord.Message) -> bool:
-        """Engedjük a folytatást wake nélkül, ha utoljára VELÜNK beszélt itt."""
-        ch_id = message.channel.id
-        info = self._conv_by_channel.get(ch_id)
-        if not info:
-            return False
-        user_id, ts = info
-        if user_id != message.author.id:
-            return False
-        return (time.time() - ts) <= FOLLOWUP_WINDOW_SECONDS
-
-    def _update_conv_owner(self, channel_id: int, user_id: int):
-        self._conv_by_channel[channel_id] = (user_id, time.time())
-
-    def _dedup(self, message: discord.Message) -> bool:
-        """Visszatér True-val, ha EZT az üzenetet már megválaszoltuk nagyon nemrég."""
-        sig = re.sub(r"\s+", " ", (message.content or "").strip().lower())
+    def _in_session(self, message: discord.Message) -> bool:
         key = (message.channel.id, message.author.id)
-        old = self._last_msg_sig.get(key)
         now = time.time()
-        if old and old[0] == sig and (now - old[1]) <= DEDUP_WINDOW_SECONDS:
+        exp = self._sessions.get(key, 0)
+        return (exp > now) and _meaningful(message.content or "")
+
+    def _extend_session(self, message: discord.Message):
+        self._sessions[(message.channel.id, message.author.id)] = time.time() + SESSION_WINDOW_SECONDS
+
+    def _dedup_hit(self, channel_id: int, text: str) -> bool:
+        now = time.time()
+        sig = (channel_id, hash(text))
+        if self._recent_payloads:
+            for k in list(self._recent_payloads.keys()):
+                if self._recent_payloads[k] < now - DEDUP_TTL_SECONDS:
+                    del self._recent_payloads[k]
+        last = self._recent_payloads.get(sig)
+        if last and (now - last) <= DEDUP_TTL_SECONDS:
             return True
-        self._last_msg_sig[key] = (sig, now)
+        self._recent_payloads[sig] = now
         return False
+
+    def _is_wake(self, message: discord.Message) -> bool:
+        if self._in_session(message):
+            return True
+        if not self.bot.user:
+            return False
+        return wake.should_wake(message.content or "", self.bot.user.id)
 
     async def _safe_send_reply(self, message: discord.Message, text: str):
         text = clamp_len(text)
-        if AGENT_SELF_CENSOR:
-            text = star_profanity(text)
+        if self._dedup_hit(message.channel.id, text):
+            log.warning("Dedup: ugyanaz a kimenet %s csatornán rövid időn belül – eldobva.", message.channel.id)
+            return
         ref = message.to_reference(fail_if_not_exists=False)
         try:
-            await message.channel.send(
-                content=text,
-                reference=ref,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException as e:
-            code = getattr(e, "code", None)
-            log.warning("Reply reference bukott (code=%s) – fallback sima send.", code)
-            await message.channel.send(
-                content=text,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+            await message.channel.send(content=text, reference=ref, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            await message.channel.send(content=text, allowed_mentions=discord.AllowedMentions.none())
 
-    def _is_proactive_target(self, message: discord.Message) -> bool:
-        if not PROACTIVE_ENABLE:
-            return False
-        if not isinstance(message.author, discord.Member):
-            return False
-        # ne legyen friss (antibait)
-        acct_days = max(0, (discord.utils.utcnow() - message.author.created_at).days)
-        if acct_days < PROACTIVE_MIN_ACCOUNT_DAYS:
-            return False
-        txt = (message.content or "").lower()
-        if any(k in txt for k in PROACTIVE_KEYWORDS):
-            return True
-        return False
-
-    # --- esemény ---
+    # esemény
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # saját/bot üzenetek ignor
         if message.author.bot:
             return
         if self.bot.user and message.author.id == self.bot.user.id:
             return
-        # whitelist
         if not self._is_allowed_channel(message.channel):
             return
 
         raw = (message.content or "").strip()
         low = raw.lower()
 
-        # Profanity – az agent nem reagál (moderáció intézi)
         if contains_profane(low):
             log.info("Profanity észlelve (agent hallgat): %s", raw[:120])
-            # followup ablakot is tisztítjuk, ha más beír közben
-            self._conv_by_channel.pop(message.channel.id, None)
             return
 
-        woke = self._is_wake(message)
-        follow = self._is_followup(message)
-
-        # proaktív belépés (óvatos): csak ha nem follow/wake és kulcsos a tartalom
-        if (not woke and not follow) and self._is_proactive_target(message):
-            if not self._cooldown_ok(message.author.id):
-                return
-            ticket = _resolve_channel_mention(
-                message.guild, env_key="CHANNEL_TICKET_HUB", fallback_name="ticket-hub"
-            ) if message.guild else "#ticket-hub"
-            txt = f"Röviden: MEBINU ~15 USD, custom ~30 USD, képek ~6 USD. Ha komoly az érdeklődés, nyiss ticketet itt: {ticket} — ott végigviszlek."
-            await self._safe_send_reply(message, txt)
-            self._update_conv_owner(message.channel.id, message.author.id)
+        if not self._is_wake(message):
             return
 
-        # ha se wake, se follow → kilépünk
-        if not (woke or follow):
-            return
-
-        # cooldown (owner kivétel), + dedup guard
         if message.author.id != OWNER_ID and not self._cooldown_ok(message.author.id):
             return
-        if self._dedup(message):
-            return
 
-        # ping → pong (olcsó út)
         if re.search(r"\bping(el|elsz|elek|etek|etni)?\b", low):
             await self._safe_send_reply(message, "pong")
-            self._update_conv_owner(message.channel.id, message.author.id)
+            self._extend_session(message)
             return
 
-        # wake-szavak és mention eltávolítása
-        lowered = low
-        for w in WAKE_WORDS:
-            lowered = re.sub(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", " ", lowered)
-        if self.bot.user:
-            mention = f"<@{self.bot.user.id}>"
-            lowered = lowered.replace(mention, " ")
-        user_prompt = re.sub(r"\s+", " ", lowered).strip() or raw
+        # wake eltávolítása (mention + prefixek + core)
+        cleaned = wake.strip_wake(raw, self.bot.user.id if self.bot.user else 0)
+        user_prompt = cleaned or raw
 
-        # napi keret
         est = approx_token_count(user_prompt) + 180
         if not self._check_and_book_tokens(est):
             await self._safe_send_reply(message, "A napi AI-keret most elfogyott. Próbáld később.")
             return
 
-        # player-card, promó fókusz
         pc = _load_player_card(message.author.id)
-        promo_focus = any(k in user_prompt.lower() for k in ["mebinu", "ár", "árak", "commission", "nsfw", "vásárl", "ticket"])
-
-        # rendszerüzenet + guide
+        promo_focus = any(k in user_prompt.lower() for k in ["mebinu","ár","árak","commission","nsfw","vásárl","ticket","jegy"])
         sys_msg = build_system_msg(message.guild, pc)
         soft_cap, _ = decide_length_bounds(user_prompt, promo_focus)
-        ticket = _resolve_channel_mention(message.guild, env_key="CHANNEL_TICKET_HUB", fallback_name="ticket-hub") if message.guild else "#ticket-hub"
 
-        guide = []
-        guide.append(f"Maximális hossz: {soft_cap} karakter. Rövid, feszes mondatok.")
+        guide = [f"Maximális hossz: {soft_cap} karakter. Rövid, feszes mondatok."]
         if promo_focus:
-            guide.append(f"MEBINU/ár/commission témánál 1-2 mondatos összefoglaló + terelés ide: {ticket}.")
-        guide.append("Ne beszélj a saját működésedről vagy korlátaidról. Kerüld a small talkot.")
+            ticket = _resolve_channel_mention(message.guild, env_key="CHANNEL_TICKET_HUB", fallback_name="ticket-hub") if message.guild else "#ticket-hub"
+            guide.append(f"Ha MEBINU/ár/commission téma: 1–2 mondatos összefoglaló + terelés ide: {ticket}.")
+        guide.append("Ne beszélj a saját működésedről vagy korlátaidról. Kerüld a túlzó small talkot.")
         assistant_rules = " ".join(guide)
 
         messages = [
@@ -418,9 +345,7 @@ class AgentGate(commands.Cog):
             {"role": "system", "content": assistant_rules},
             {"role": "user", "content": user_prompt},
         ]
-
-        # owner + mention → heavy modell
-        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and woke) else OPENAI_MODEL
+        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and self.bot.user and wake.has_mention(raw, self.bot.user.id)) else OPENAI_MODEL
 
         try:
             reply = await call_openai_chat(messages, model=model)
@@ -434,16 +359,23 @@ class AgentGate(commands.Cog):
             return
 
         reply = sanitize_model_reply(reply)
+        reply = _force_clickable_ticket(reply, message.guild)
+
         if len(reply) > soft_cap:
             reply = reply[:soft_cap].rstrip() + "…"
 
         try:
             await self._safe_send_reply(message, reply)
-            self._update_conv_owner(message.channel.id, message.author.id)
+            self._extend_session(message)
         except Exception as e:
             log.exception("Küldési hiba: %s", e)
 
-# -------- setup --------
+    def _cooldown_ok(self, user_id: int) -> bool:
+        last = self._user_cooldowns.get(user_id, 0)
+        if (time.time() - last) >= AGENT_REPLY_COOLDOWN_SECONDS:
+            self._user_cooldowns[user_id] = time.time()
+            return True
+        return False
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AgentGate(bot))
