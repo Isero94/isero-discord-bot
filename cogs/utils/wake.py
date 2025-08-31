@@ -1,4 +1,4 @@
-# utils/wake.py
+# cogs/utils/wake.py
 from __future__ import annotations
 
 import os
@@ -6,77 +6,70 @@ import re
 import unicodedata
 from typing import List
 
-__all__ = ["WakeMatcher"]
-
-def _csv(val: str | None) -> List[str]:
+def _csv_list(val: str | None) -> List[str]:
     if not val:
         return []
     return [x.strip() for x in val.split(",") if x.strip()]
 
-def _fold(s: str) -> str:
-    # kisbetű + ékezetelt → ékezet nélküli
-    s = s.lower()
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-    # egyszerű zajok kiszedése
-    s = re.sub(r"[^\w\s!?.,:;@<>/\\-]+", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+def _norm(text: str) -> str:
+    # kisbetű + ékezetelt betűk kiegyenesítése (hé -> he, helló -> hello)
+    t = unicodedata.normalize("NFD", text.lower())
+    t = "".join(ch for ch in t if not unicodedata.combining(ch))
+    # zajjelek lazán: vesszők, pontok stb. szóközzé
+    t = re.sub(r"[\s,;:._\-–—]+", " ", t).strip()
+    return t
 
 class WakeMatcher:
-    """Kétlépcsős wake:
-    - mention (<@id>) vagy <@!id> azonnal ébreszt
-    - legfeljebb N prefix + core kulcsszó (isero/issero)
     """
-    def __init__(self, cores: List[str], prefixes: List[str], max_prefix_tokens: int, legacy_words: List[str]):
-        self.cores = [c.strip().lower() for c in cores if c.strip()]
-        if not self.cores:
-            self.cores = ["isero", "issero"]
-        self.prefixes = [p.strip().lower() for p in prefixes if p.strip()]
-        self.max_prefix_tokens = max(0, int(max_prefix_tokens))
-        self.legacy = [w.strip().lower() for w in legacy_words if w.strip()]
+    2-rétegű ébresztés:
+      - CORE: pl. "isero", "issero" (+ opcionális !?.)
+      - max N előtag engedve (hu+en), pl. "hej", "oke", "pls", "excuse me", stb.
+    Mentions (<@id>) mindig ébresztenek.
+    """
 
-        # regex i+ss?e+ro+ engedi az apró gépelési elütéseket (issero/iseroo)
-        core_pat = r"(?:%s|i+ss?e*ro+)" % "|".join(map(re.escape, self.cores))
-        if self.prefixes and self.max_prefix_tokens > 0:
-            pref_group = r"(?:\b(?:%s)\b[\s,;:.—-]{0,2}){0,%d}" % ("|".join(map(re.escape, self.prefixes)), self.max_prefix_tokens)
-            self.regex = re.compile(rf"(?i)(^|[\s,;:.—-]){pref_group}\b{core_pat}\b[!?.,]*")
+    def __init__(self):
+        self.core = [w for w in _csv_list(os.getenv("WAKE_CORE", ""))] or ["isero", "issero"]
+        self.pref_hu = _csv_list(os.getenv("WAKE_PREFIXES_HU", ""))
+        self.pref_en = _csv_list(os.getenv("WAKE_PREFIXES_EN", ""))
+        self.max_pref = int(os.getenv("WAKE_MAX_PREFIX_TOKENS", "2") or "2")
+
+        # lazán engedjük a “issero/isero/iseero” nyújtásokat
+        core_pattern = r"(?:%s)" % "|".join([r"i+ss?e+ro+" for _ in self.core])
+        pre_list = [p for p in (self.pref_hu + self.pref_en) if p]
+        if pre_list:
+            pre_alt = "|".join(re.escape(_norm(p)) for p in pre_list)
+            pre_block = rf"(?:\b(?:{pre_alt})\b\s{{0,2}}){{0,{self.max_pref}}}"
         else:
-            self.regex = re.compile(rf"(?i)(^|[\s,;:.—-])\b{core_pat}\b[!?.,]*")
+            pre_block = r""
 
-    @classmethod
-    def from_env(cls) -> "WakeMatcher":
-        cores = _csv(os.getenv("WAKE_CORE", ""))  # pl.: "isero,issero"
-        pref_hu = _csv(os.getenv("WAKE_PREFIXES_HU", ""))
-        pref_en = _csv(os.getenv("WAKE_PREFIXES_EN", ""))
-        legacy = _csv(os.getenv("WAKE_WORDS", ""))  # visszafelé kompatibilitás
-        maxn = int(os.getenv("WAKE_MAX_PREFIX_TOKENS", "2"))
-        return cls(cores=cores, prefixes=pref_hu + pref_en, max_prefix_tokens=maxn, legacy_words=legacy)
+        self._rx = re.compile(
+            rf"(?i)(?:^|[\s,;:.—-]){pre_block}\b{core_pattern}\b[!?.,]*"
+        )
 
-    def is_wake(self, text: str, *, bot_id: int | None = None) -> bool:
-        if bot_id:
-            if f"<@{bot_id}>" in text or f"<@!{bot_id}>" in text:
-                return True
-        folded = _fold(text)
-        if self.regex.search(folded):
+    def has_wake(self, content: str, *, bot_mention: str | None = None) -> bool:
+        if not content:
+            return False
+        if bot_mention and bot_mention in content:
             return True
-        # fallback a régi WAKE_WORDS listára (szigorúbb, de megmarad)
-        for w in self.legacy:
-            if not w:
-                continue
-            if re.search(rf"(^|\s){re.escape(w.lower())}(\s|[!?.,:]|$)", folded):
-                return True
-        return False
+        norm = _norm(content)
+        return bool(self._rx.search(norm))
 
-    def strip_wake_prefixes(self, text: str, *, bot_id: int | None = None) -> str:
-        """Eltávolítja a felfogott prefix+core részt a prompt elejéről – a többi marad."""
-        t = text
-        if bot_id:
-            t = t.replace(f"<@{bot_id}>", " ").replace(f"<@!{bot_id}>", " ")
-        # csak az elejéről vágunk
-        m = self.regex.search(_fold(t))
-        if m and m.start() <= 2:
-            # durva kivágás: a nem-foldolt sztringből vágni bonyolult; egyszerűsítünk
-            # – az első 1-2 szó + végjelek gyakran a wake rész.
-            t = re.sub(r"^\s*[\w\-!?.:,;]{1,40}(\s+[\w\-!?.:,;]{1,20}){0,2}\s*", " ", t)
-        return re.sub(r"\s+", " ", t).strip()
+    def strip(self, content: str, *, bot_mention: str | None = None) -> str:
+        if not content:
+            return ""
+        t = content
+        if bot_mention:
+            t = t.replace(bot_mention, " ")
+        # a normalizált alapján keressük meg a match szegmenst, majd a “nyersben” nagyjából kivágjuk
+        norm = _norm(t)
+        m = self._rx.search(norm)
+        if not m:
+            return re.sub(r"\s+", " ", t).strip()
+        # durva kivágás: a match-hez tartozó szavakat a nyersből is eltüntetjük
+        span_text = m.group(0)
+        # egyszerű stratégia: a “nyers szövegben” is cseréljük a normált rész szavait
+        for token in span_text.split():
+            if len(token) >= 2:
+                t = re.sub(re.escape(token), " ", t, flags=re.IGNORECASE)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t
