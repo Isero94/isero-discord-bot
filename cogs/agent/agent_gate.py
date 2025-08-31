@@ -1,163 +1,255 @@
 # cogs/agent/agent_gate.py
+# ISERO – Agent Gate (mention/wake-word kapu + modellhívás + biztonságos küldés)
+# Javítás: 50035 "Unknown message" elkerülése (fail_if_not_exists + fallback send)
+
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import os
+import re
+import time
+import json
+import logging
+from dataclasses import dataclass, field
+from typing import Dict, Optional, List
 
-import discord
-from discord import app_commands
-from discord.ext import commands
 import httpx
-from openai import OpenAI
+import discord
+from discord.ext import commands
 
-import config
-from . import policy
+log = logging.getLogger("bot.agent_gate")
+
+
+# ----------------------------
+# Konfiguráció olvasása (ENV)
+# ----------------------------
+
+def _csv_list(val: str | None) -> List[str]:
+    if not val:
+        return []
+    return [x.strip() for x in val.split(",") if x.strip()]
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_APIKEY") or os.getenv("OPENAI_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL_HEAVY = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
+
+# Csatorna whitelist – ha üres, **nem** korlátozunk (figyelmeztetéssel),
+# hogy tesztelni tudd. Ha szigorú whitelistet szeretnél, töltsd fel CSV-vel.
+AGENT_ALLOWED_CHANNELS = _csv_list(os.getenv("AGENT_ALLOWED_CHANNELS", "").strip())
+if not AGENT_ALLOWED_CHANNELS:
+    log.warning("AGENT_ALLOWED_CHANNELS üres – agent válaszolhat minden csatornában (teszt mód).")
+
+# Wake szavak (mention mellett)
+WAKE_WORDS = [w.lower() for w in _csv_list(os.getenv("WAKE_WORDS", "isero,x"))]
+
+# Napi token limit (egyszerű, best-effort becslés) és cooldown
+AGENT_DAILY_TOKEN_LIMIT = int(os.getenv("AGENT_DAILY_TOKEN_LIMIT", "20000"))
+AGENT_REPLY_COOLDOWN_SECONDS = int(os.getenv("AGENT_REPLY_COOLDOWN_SECONDS", "20"))
+
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+
+# Max válasz hossz (Discord 2000 limit alatt maradunk)
+MAX_REPLY_CHARS = 1900
+
+
+# ----------------------------
+# Segéd: egyszerű token-becslés
+# ----------------------------
+
+def approx_token_count(text: str) -> int:
+    # durva becslés (4 char ~ 1 token)
+    return max(1, len(text) // 4)
+
+
+# ----------------------------
+# Napi könyvelés (memória)
+# ----------------------------
+
+@dataclass
+class Budget:
+    day_key: str
+    spent: int = 0
+
+
+# ----------------------------
+# OpenAI hívás
+# ----------------------------
+
+async def call_openai_chat(messages: list[dict], model: str, timeout_s: float = 30.0) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY hiányzik az ENV-ből")
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "messages": messages, "temperature": 0.6, "max_tokens": 500}
+
+    async with httpx.AsyncClient(timeout=timeout_s) as client:
+        r = await client.post("https://api.openai.com/v1/chat/completions",
+                              headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+        return text.strip()
+
+
+# ----------------------------
+# A Cog
+# ----------------------------
 
 class AgentGate(commands.Cog):
-    """
-    - @említésre, 'isero' kulcsszóra vagy DM-ben válaszol.
-    - OWNER-nek mindig válaszol.
-    - Modell futás közben váltható (admin parancs).
-    - Stílus: policy.SYSTEM_PROMPT (szarkasztikus, száraz).
-    """
+    """Mention/Wake kapu, napi keret, cooldown; biztonságos válasz-küldés."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.model: str = config.OPENAI_MODEL
-        self.daily_limit = int(config.AGENT_DAILY_TOKEN_LIMIT or 20000)
-        self.used_tokens = 0
+        self._user_cooldowns: Dict[int, float] = {}
+        self._budget = Budget(day_key=self._today_key())
 
-        # csatorna korlátozás (ha üres -> minden csatorna)
-        self.allowed_channels = set(getattr(config, "AGENT_ALLOWED_CHANNELS", []) or [])
+    # -------- utilok --------
 
-        # OpenAI kliens
-        self.client = OpenAI(api_key=config.OPENAI_API_KEY, http_client=httpx.Client(timeout=20.0))
+    def _today_key(self) -> str:
+        return time.strftime("%Y-%m-%d")
 
-        # egy munkameneti lock, hogy ne jöjjön rá több hívás egyszerre
-        self._lock = asyncio.Lock()
+    def _reset_budget_if_new_day(self):
+        today = self._today_key()
+        if self._budget.day_key != today:
+            self._budget = Budget(day_key=today)
 
-    # --------------------------- belső ---------------------------
+    def _check_and_book_tokens(self, tokens: int) -> bool:
+        """Igaz, ha még belefér a napi keretbe és könyveli."""
+        self._reset_budget_if_new_day()
+        if self._budget.spent + tokens > AGENT_DAILY_TOKEN_LIMIT:
+            return False
+        self._budget.spent += tokens
+        return True
 
-    def _should_reply(self, message: discord.Message) -> bool:
-        if not message.guild:
-            return True  # DM-ben mindig
-
-        if self.allowed_channels:
-            if message.channel.id not in self.allowed_channels:
-                return False
-
-        # OWNER-nek mindig
-        if config.OWNER_ID and message.author.id == config.OWNER_ID:
+    def _is_allowed_channel(self, channel: discord.abc.GuildChannel | discord.Thread) -> bool:
+        """Ha van whitelist, csak ott; ha üres, engedjük (tesztbarát)."""
+        if not AGENT_ALLOWED_CHANNELS:
             return True
+        try:
+            cid = str(channel.id)
+        except Exception:
+            return False
+        return cid in AGENT_ALLOWED_CHANNELS
 
-        # említ vagy név szerint szólít
-        content_low = message.content.lower()
-        bot_mentioned = any(u.id == self.bot.user.id for u in message.mentions) if self.bot.user else False
-        name_called = "isero" in content_low or "isero a" in content_low
-        return bot_mentioned or name_called
+    def _is_wake(self, message: discord.Message) -> bool:
+        # Mention?
+        if self.bot.user and self.bot.user.mentioned_in(message):
+            return True
+        # Wake words?
+        content = (message.content or "").lower()
+        for w in WAKE_WORDS:
+            # szó elején/szóközzel, vagy egyszerű tartalmazás
+            if re.search(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", content):
+                return True
+        return False
 
-    def _build_messages(self, user_text: str, author: discord.Member) -> list:
-        sys = policy.SYSTEM_PROMPT
-        user = f"{author.display_name}: {user_text}"
-        return [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user}
-        ]
+    def _cooldown_ok(self, user_id: int) -> bool:
+        last = self._user_cooldowns.get(user_id, 0)
+        if (time.time() - last) >= AGENT_REPLY_COOLDOWN_SECONDS:
+            self._user_cooldowns[user_id] = time.time()
+            return True
+        return False
 
-    def _chat_blocking(self, msgs: list) -> tuple[str, int]:
-        """Szinkron hívás külön szálban futtatva – vissza: (válasz, felhasznált_tok.)"""
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=msgs,
-            temperature=0.6,
-            max_tokens=400,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        used = int(getattr(resp.usage, "total_tokens", 0) or 0)
-        return text, used
+    async def _safe_send_reply(self, message: discord.Message, text: str):
+        """Biztonságos küldés: reference, de ha 50035, akkor sima send."""
+        text = text.strip()
+        if len(text) > MAX_REPLY_CHARS:
+            text = text[:MAX_REPLY_CHARS] + "…"
 
-    async def _chat(self, user_text: str, author: discord.Member) -> tuple[str, int]:
-        msgs = self._build_messages(user_text, author)
-        # blokkolót külön threadben
-        return await asyncio.to_thread(self._chat_blocking, msgs)
+        # Próbáljuk meg referenciával – ne bukjon el, ha eltűnt a source.
+        ref = message.to_reference(fail_if_not_exists=False)
+        try:
+            await message.channel.send(
+                content=text,
+                reference=ref,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException as e:
+            # 50035 – Invalid Form Body / Unknown message → essünk vissza simára
+            code = getattr(e, "code", None)
+            log.warning("Reply reference bukott (code=%s) – fallback sima send.", code)
+            await message.channel.send(
+                content=text,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
-    # --------------------------- események ---------------------------
+    # -------- események --------
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # 1) Ne reagáljunk botokra / saját magunkra
         if message.author.bot:
             return
-        if not self._should_reply(message):
+        if self.bot.user and message.author.id == self.bot.user.id:
             return
 
-        async with self._lock:
-            if self.used_tokens >= self.daily_limit:
-                return  # némán elengedjük, ha kifutna a napi keret
+        # 2) Csatorna whitelist
+        if not self._is_allowed_channel(message.channel):
+            return
 
-            try:
-                reply, used = await self._chat(message.content, message.author)
-            except Exception as e:
-                # ne pukkadjunk – rövid száraz hiba
-                await message.channel.send("Valami elfüstölt a háttérben. Próbáld újra később.")
-                return
+        # 3) Mentions / wake words kapu
+        if not self._is_wake(message):
+            return
 
-            self.used_tokens += used
-            if reply:
-                await message.reply(reply)
+        # 4) Cooldown (owner kivétel)
+        if message.author.id != OWNER_ID and not self._cooldown_ok(message.author.id):
+            return
 
-    # --------------------------- admin / model ---------------------------
+        # 5) Prompt készítés
+        user_text = (message.content or "").strip()
+        # vegyük le a botneveket / wake szavakat a prompt elejéről, hogy tisztább legyen
+        lowered = user_text.lower()
+        for w in WAKE_WORDS:
+            lowered = re.sub(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", " ", lowered)
+        if self.bot.user:
+            mention = f"<@{self.bot.user.id}>"
+            lowered = lowered.replace(mention, " ")
+        user_prompt = re.sub(r"\s+", " ", lowered).strip()
+        if not user_prompt:
+            user_prompt = (message.content or "").strip()
 
-    group = app_commands.Group(name="agent", description="Agent beállítások")
+        # 6) Token keret check (durva becslés)
+        est = approx_token_count(user_prompt) + 150  # + válaszkeret
+        if not self._check_and_book_tokens(est):
+            await self._safe_send_reply(message, "Napi AI-keretünk most elfogyott. Próbáld meg később. 🙏")
+            return
 
-    @group.command(name="model", description="Modell lekérdezése/beállítása")
-    @app_commands.describe(name="Új modell neve (pl. gpt-4o, gpt-4o-mini). Üresen: csak megmutatja.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def model_cmd(self, interaction: discord.Interaction, name: Optional[str] = None):
-        if name:
-            self.model = name.strip()
-            await interaction.response.send_message(f"Oké. Új modell: **{self.model}**", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"Jelenlegi modell: **{self.model}**", ephemeral=True)
-
-    @group.command(name="usage", description="Mai tokenhasználat")
-    async def usage_cmd(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"Ma felhasznált: **{self.used_tokens} / {self.daily_limit}** token.", ephemeral=True
+        # 7) OpenAI hívás
+        system_msg = (
+            "You are ISERO agent. Be concise (≤300 chars if possible). "
+            "Hungarian-friendly tone, casual, helpful. Avoid unsafe content."
         )
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_prompt},
+        ]
 
-    @group.command(name="allow", description="Megengedett csatorna hozzáadása/eltávolítása (ha üres lista, mindenhol válaszol).")
-    @app_commands.describe(action="add|remove|list", channel="Csatorna (add/remove esetén)")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def allow_cmd(self, interaction: discord.Interaction, action: str, channel: Optional[discord.TextChannel] = None):
-        action = action.lower()
-        if action == "list":
-            if not self.allowed_channels:
-                await interaction.response.send_message("Jelenleg **minden** csatornán válaszolok.", ephemeral=True)
-            else:
-                items = ", ".join(f"<#{cid}>" for cid in self.allowed_channels)
-                await interaction.response.send_message(f"Megengedett csatornák: {items}", ephemeral=True)
+        model = OPENAI_MODEL
+        # Egyszerű szabály: ownernek engedjük a heavy modellt @mention esetén
+        if message.author.id == OWNER_ID and self.bot.user and self.bot.user.mentioned_in(message):
+            model = OPENAI_MODEL_HEAVY
+
+        try:
+            reply_text = await call_openai_chat(messages, model=model)
+        except httpx.HTTPError as e:
+            log.exception("OpenAI hiba: %s", e)
+            await self._safe_send_reply(message, "Most akadozom az AI-nál. Próbáljuk újra kicsit később. 🙇")
+            return
+        except Exception as e:
+            log.exception("Váratlan AI hiba: %s", e)
+            await self._safe_send_reply(message, "Valami váratlan történt. Jelentem a staffnak. ⚠️")
             return
 
-        if channel is None:
-            await interaction.response.send_message("Adj meg csatornát.", ephemeral=True)
-            return
+        # 8) Biztonságos küldés (50035 fix)
+        try:
+            await self._safe_send_reply(message, reply_text)
+        except Exception as e:
+            log.exception("Küldési hiba: %s", e)
 
-        if action == "add":
-            self.allowed_channels.add(channel.id)
-            await interaction.response.send_message(f"Hozzáadva: {channel.mention}", ephemeral=True)
-        elif action == "remove":
-            self.allowed_channels.discard(channel.id)
-            await interaction.response.send_message(f"Eltávolítva: {channel.mention}", ephemeral=True)
-        else:
-            await interaction.response.send_message("Használat: action = add|remove|list", ephemeral=True)
 
+# -------- setup (cog regisztráció) --------
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AgentGate(bot))
-    try:
-        if config.GUILD_ID:
-            await bot.tree.sync(guild=discord.Object(id=config.GUILD_ID))
-        else:
-            await bot.tree.sync()
-    except Exception:
-        pass
