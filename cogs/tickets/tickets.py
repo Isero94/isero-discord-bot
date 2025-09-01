@@ -1,4 +1,3 @@
-# cogs/tickets/tickets.py
 from __future__ import annotations
 
 import os
@@ -27,6 +26,7 @@ ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
 STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
 TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
 
+NSFW_ROLE_NAME        = os.getenv("NSFW_ROLE_NAME", "NSFW 18+")
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
 
 # ---- channel topic marker / helpers ----
@@ -43,8 +43,8 @@ def kind_from_topic(topic: str | None) -> str:
     # topic pl.: "owner:123 | type:commission"
     if not topic:
         return "general-help"
-    m = re.search(r"type:([a-z0-9\-]+)", topic)
-    return m.group(1) if m else "general-help"
+    m = re.search(r"type:([a-z0-9\- ]+)", topic)
+    return (m.group(1) if m else "general-help").strip()
 
 def owner_from_topic(topic: str | None) -> int | None:
     if not topic:
@@ -61,7 +61,6 @@ class OpenTicketView(discord.ui.View):
 
     @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.primary, custom_id="ticket:open")
     async def open_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # category selection is ephemeral for the user only
         await interaction.response.send_message(
             embed=self.cog.category_embed(),
             view=CategoryView(self.cog),
@@ -100,6 +99,31 @@ class AgeView(discord.ui.View):
 
     @discord.ui.button(label="Yes", style=discord.ButtonStyle.success)
     async def yes(self, i: discord.Interaction, _: discord.ui.Button):
+        # NSFW 18+ szerep hozzárendelése – ha nincs, létrehozzuk
+        guild = T.cast(discord.Guild, i.guild)
+        user  = T.cast(discord.Member, i.user)
+
+        role = discord.utils.get(guild.roles, name=NSFW_ROLE_NAME)
+        if role is None:
+            try:
+                role = await guild.create_role(name=NSFW_ROLE_NAME, reason="ISERO NSFW access")
+            except discord.Forbidden:
+                await i.response.send_message(
+                    "I don't have permission to create roles. Please grant me `Manage Roles`.",
+                    ephemeral=True
+                )
+                return
+
+        if role not in user.roles:
+            try:
+                await user.add_roles(role, reason="ISERO 18+ self-confirmation")
+            except discord.Forbidden:
+                await i.response.send_message(
+                    f"I couldn't assign the `{NSFW_ROLE_NAME}` role (missing `Manage Roles`).",
+                    ephemeral=True
+                )
+                return
+
         await self.cog.on_category_chosen(i, "nsfw")
 
     @discord.ui.button(label="No", style=discord.ButtonStyle.secondary)
@@ -115,7 +139,7 @@ class CloseTicketView(discord.ui.View):
     async def close_btn(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.close_current_ticket(i)
 
-# === ÚJ: csatorna-kezdő view (Én írom / ISERO írja) + Modal ===
+# === csatorna-kezdő view (Én írom / ISERO írja) + Modal ===
 
 class ChannelStartView(discord.ui.View):
     def __init__(self, cog: "TicketsCog"):
@@ -247,7 +271,6 @@ class TicketsCog(commands.Cog):
 
     # --------- Category választás ---------
     async def on_category_chosen(self, i: discord.Interaction, key: str):
-        # enforce one open + cooldown
         remain = self._cooldown_left(i.user.id)
         if remain > 0:
             await i.response.send_message(
@@ -256,7 +279,6 @@ class TicketsCog(commands.Cog):
             )
             return
 
-        # already open?
         existing = await self._find_existing_ticket(T.cast(discord.Guild, i.guild), i.user.id)
         if existing:
             await i.response.send_message(
@@ -276,7 +298,6 @@ class TicketsCog(commands.Cog):
         ch = T.cast(discord.TextChannel, i.channel)
         guild = T.cast(discord.Guild, i.guild)
 
-        # move to archive if set
         if ARCHIVE_CATEGORY_ID:
             cat = guild.get_channel(ARCHIVE_CATEGORY_ID)
             if isinstance(cat, discord.CategoryChannel):
@@ -285,7 +306,6 @@ class TicketsCog(commands.Cog):
                 except discord.Forbidden:
                     pass
 
-        # lock channel
         try:
             ow = ch.overwrites_for(guild.default_role)
             ow.view_channel = True  # keep visible in archive
@@ -296,7 +316,7 @@ class TicketsCog(commands.Cog):
 
         await i.response.send_message("Ticket closed & archived.", ephemeral=True)
 
-    # --------- ÚJ: „Én írom” flow ---------
+    # --------- „Én írom” flow ---------
     async def start_self_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         top_owner = owner_from_topic(ch.topic)
@@ -312,7 +332,7 @@ class TicketsCog(commands.Cog):
 
         await i.response.send_modal(OrderModal(_submit_cb))
 
-    # --------- ÚJ: „ISERO írja” flow (első kérdések) ---------
+    # --------- „ISERO írja” flow (első kérdések) – NEM ephemeral ---------
     async def start_isero_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
@@ -320,11 +340,15 @@ class TicketsCog(commands.Cog):
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         elif k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
-        elif k == "nsfw":
+        elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
-        await i.response.send_message(q, ephemeral=True)
+
+        await i.response.send_message(
+            f"{i.user.mention} {q}",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+        )
 
     # --------- Slash commands ----------
     @app_commands.command(name="ticket_hub_setup", description="Post the Ticket Hub here.")
@@ -362,16 +386,13 @@ class TicketsCog(commands.Cog):
         ch = message.channel
         if isinstance(ch, discord.TextChannel) and ch.id in self.pending:
             st = self.pending[ch.id]
-            # csak a tulaj képei számítanak
             owner_id = st.get("owner_id")
             if owner_id and message.author.id != owner_id:
                 return
-            # 'kész' paranccsal lezárhatja
             if message.content.strip().lower() == "kész":
                 self.pending.pop(ch.id, None)
                 await ch.send("✅ Rendben, rögzítettem a leírást. Hamarosan jelentkezünk.")
                 return
-            # csatolmányok számolása
             if message.attachments:
                 take = min(len(message.attachments), st["left"])
                 st["left"] -= take
