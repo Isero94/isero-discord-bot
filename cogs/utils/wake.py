@@ -1,127 +1,72 @@
 # cogs/utils/wake.py
-# Biztonságos, ENV-ből paraméterezhető wake matcher ISERO-hoz.
 from __future__ import annotations
-
 import os
 import re
-from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
-def _split_csv(val: str | None) -> List[str]:
-    if not val:
+def _csv(s: str | None) -> List[str]:
+    if not s:
         return []
-    parts = [p.strip() for p in val.split(",")]
-    # üres, duplikált és túl rövid tokenek kidobása
-    clean = []
-    seen = set()
-    for p in parts:
-        if not p:
-            continue
-        if p.lower() in seen:
-            continue
-        seen.add(p.lower())
-        clean.append(p)
-    return clean
+    # levágjuk az idézőjeleket/whitespace-t, üreseket kidobjuk
+    raw = s.strip().strip('"\'')
 
-def _mk_alt(tokens: Iterable[str]) -> Optional[str]:
-    toks = [t for t in (re.escape(x.strip()) for x in tokens) if t]
-    if not toks:
-        return None
-    # hossz szerint rendezés, hogy a hosszabb variáns előbb illeszkedjen
-    toks = sorted(set(toks), key=len, reverse=True)
-    return r"(?:%s)" % "|".join(toks)
+    parts = [p.strip() for p in raw.split(",")]
+    return [p for p in parts if p]
 
-@dataclass
-class WakeConfig:
-    core_names: List[str]
-    prefixes_hu: List[str]
-    prefixes_en: List[str]
-    max_prefix_tokens: int
+WAKE_CORE = _csv(os.getenv("WAKE_CORE") or "isero")
+WAKE_PREFIXES_HU = _csv(os.getenv("WAKE_PREFIXES_HU") or "")
+WAKE_PREFIXES_EN = _csv(os.getenv("WAKE_PREFIXES_EN") or "")
+WAKE_MAX_PREFIX_TOKENS = int(os.getenv("WAKE_MAX_PREFIX_TOKENS") or "2")
 
-    @classmethod
-    def from_env(cls) -> "WakeConfig":
-        core = _split_csv(os.getenv("WAKE_CORE") or "isero,issero")
-        pf_hu = _split_csv(os.getenv("WAKE_PREFIXES_HU") or "hé,szia,hello,helló,na,figyi,kérlek,pls")
-        pf_en = _split_csv(os.getenv("WAKE_PREFIXES_EN") or "hey,hi,hello,please,pls")
-        try:
-            mpt = int(os.getenv("WAKE_MAX_PREFIX_TOKENS", "2"))
-        except Exception:
-            mpt = 2
-        # biztonsági korlát
-        mpt = max(0, min(mpt, 4))
-        return cls(core, pf_hu, pf_en, mpt)
+def _build_regex(core: List[str],
+                 pref_hu: List[str],
+                 pref_en: List[str],
+                 max_tokens: int) -> re.Pattern:
+    # védőszűrés
+    core = [c for c in core if c]
+    pref_hu = [p for p in pref_hu if p]
+    pref_en = [p for p in pref_en if p]
+    if not core:
+        core = ["isero"]
+
+    core_alt = "|".join(re.escape(c) for c in core)
+    # prefixek szóközökkel lehetnek (pl. "excuse me") → engedjük
+    pref_all = pref_hu + pref_en
+    if pref_all:
+        pref_alt = "|".join(re.escape(p) for p in pref_all)
+        # max_tokens darab PREFIX + whitespace ismételhető, de üres alternatíva nincs
+        prefix_block = rf"(?:\s*(?:{pref_alt})\s+){{0,{max(0, max_tokens)}}}"
+    else:
+        prefix_block = ""
+
+    # mention minták
+    mention = r"(?:<@!?\d+>)"
+
+    # a 'core' megengedett írásjelek határolásával
+    body = rf"(?:{prefix_block}(?:{core_alt}|{mention}))"
+    pat = rf"(?i)(?:^|\s){body}(?:\s|[!?.,:;]|$)"
+
+    return re.compile(pat)
+
+_WAKE_RE = _build_regex(WAKE_CORE, WAKE_PREFIXES_HU, WAKE_PREFIXES_EN, WAKE_MAX_PREFIX_TOKENS)
 
 class WakeMatcher:
-    """
-    Egyszerű, de strapabíró „ébresztő”:
-      - Mentions: <@id> → azonnal wake
-      - Core név (pl. isero, issero) bárhol a szövegben → wake
-      - Prefix(ek) a sor elején (0..N) + core később → wake
-    A strip() kiveszi az elejéről a mentiont/prefixet/core-t és visszaadja a hasznos promptot.
-    """
-    def __init__(self, cfg: Optional[WakeConfig] = None):
-        self.cfg = cfg or WakeConfig.from_env()
-        self._core_alt = _mk_alt(self.cfg.core_names)
-
-        # prefix alt – hu+en együtt
-        pf_all = self.cfg.prefixes_hu + self.cfg.prefixes_en
-        self._pf_alt = _mk_alt(pf_all)
-
-        # prefix-block regex az elejéről, 0..max darab szó
-        if self._pf_alt:
-            self._pref_re = re.compile(
-                rf"^(?:\s*{self._pf_alt}\s+)" rf"{{0,{self.cfg.max_prefix_tokens}}}",
-                flags=re.IGNORECASE
-            )
-        else:
-            self._pref_re = None
-
-        # core a sor elején (miután prefixet levettük)
-        if self._core_alt:
-            self._core_head_re = re.compile(
-                rf"^\s*{self._core_alt}\s*[:,\-–—]*\s*",
-                flags=re.IGNORECASE
-            )
-        else:
-            self._core_head_re = None
-
-    # ---- API ----
-    def has_wake(self, text: str, *, bot_mention: Optional[str] = None) -> bool:
-        if not text:
-            return False
+    def has_wake(self, text: str, bot_mention: Optional[str] = None) -> bool:
         if bot_mention and bot_mention in text:
             return True
-        low = text.lower()
+        return bool(_WAKE_RE.search(text))
 
-        # core bárhol
-        if self._core_alt and re.search(self._core_alt, low, flags=re.IGNORECASE):
-            return True
-
-        # prefixek a sor elején + később core
-        if self._pref_re and self._core_alt:
-            tail = self._pref_re.sub("", text, count=1)
-            if re.search(self._core_alt, tail, flags=re.IGNORECASE):
-                return True
-
-        return False
-
-    def strip(self, text: str, *, bot_mention: Optional[str] = None) -> str:
-        if not text:
-            return ""
+    def strip(self, text: str, bot_mention: Optional[str] = None) -> str:
         t = text
-
-        # mention kivágása bárhonnan
-        if bot_mention and bot_mention in t:
-            t = t.replace(bot_mention, " ")
-
-        # elejéről prefix blokk
-        if self._pref_re:
-            t = self._pref_re.sub("", t, count=1)
-
-        # elejéről core
-        if self._core_head_re:
-            t = self._core_head_re.sub("", t, count=1)
-
-        # maradék felesleges kezdő írásjelek
-        t = re.sub(r"^[\s:,\-–—]+", "", t)
-        return t.strip()
+        if bot_mention:
+            t = t.replace(bot_mention, "")
+        # kivágjuk az elejéről az esetleges prefix+core részt
+        m = _WAKE_RE.search(t)
+        if not m:
+            return t.strip()
+        start, end = m.span()
+        # ha a wake az elején van, levágjuk addig
+        if start <= 1:
+            return t[end:].strip()
+        # különben csak a mentiont távolítjuk – marad a szöveg
+        return t.replace(m.group(0), "").strip()
