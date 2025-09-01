@@ -114,9 +114,8 @@ def _ticket_owner_id(ch: discord.abc.GuildChannel | discord.Thread) -> Optional[
 
 def _is_ticket_context(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
     try:
-        if TICKET_HUB_CHANNEL_ID and ch.id == TICKET_HUB_CHANNEL_ID:
+        if TICKET_HUB_CHANNEL_ID and getattr(ch, "id", 0) == TICKET_HUB_CHANNEL_ID:
             return True
-        cat_id = None
         if isinstance(ch, discord.Thread) and ch.parent:
             cat_id = getattr(ch.parent, "category_id", 0) or 0
         else:
@@ -261,13 +260,14 @@ class AgentGate(commands.Cog):
 
     def _is_wake(self, message: discord.Message) -> bool:
         content = (message.content or "")
+
+        # ---- TICKET CSATORNÁKON: CSAK MEGEMLÍTÉSRE VÁLASZOLUNK ----
+        if _is_ticket_context(message.channel):
+            return self.bot.user is not None and self.bot.user.mentioned_in(message)
+
+        # normál csatornák:
         if self.bot.user and self.bot.user.mentioned_in(message):
             return True
-
-        if _is_ticket_context(message.channel):
-            owner_id = _ticket_owner_id(message.channel)
-            if owner_id and message.author.id == owner_id:
-                return True
 
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
         if WAKE.has_wake(content, bot_mention=bot_mention):
@@ -319,35 +319,24 @@ class AgentGate(commands.Cog):
         if not raw:
             return
 
-        ticket_owner = _ticket_owner_id(message.channel)
-        mention = self.bot.user and self.bot.user.mentioned_in(message)
-
-        if (
-            len(raw) < (AGENT_SESSION_MIN_CHARS or 1)
-            and not mention
-            and not (ticket_owner and message.author.id == ticket_owner)
-        ):
+        # dedup & min-len (jegyzet: ticket csatornákon is él, de ott úgysem ébred fel figyelmeztetés nélkül)
+        if len(raw) < (AGENT_SESSION_MIN_CHARS or 1):
             return
-
         if not self._dedup_ok(message.author.id, raw):
             return
 
         if not self._is_wake(message):
             return
 
-        if not (ticket_owner and message.author.id == ticket_owner):
-            if message.author.id != OWNER_ID and not self._cooldown_ok(message.author.id):
-                return
-
+        # ping-pong
         low = raw.lower()
-
         if re.search(r"\bping(el|elsz|elek|etek|etni)?\b", low):
             await self._safe_send_reply(message, "pong")
             return
 
+        # előkészítés
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
         user_prompt = WAKE.strip(raw, bot_mention=bot_mention) or raw
-
         prompt_for_model = _mask_profane(user_prompt) if AGENT_MASK_PROFANITY_TO_MODEL else user_prompt
 
         est = approx_token_count(prompt_for_model) + 180
@@ -377,7 +366,7 @@ class AgentGate(commands.Cog):
             {"role": "user", "content": prompt_for_model},
         ]
 
-        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and mention) else OPENAI_MODEL
+        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and self.bot.user and self.bot.user.mentioned_in(message)) else OPENAI_MODEL
 
         try:
             reply = await call_openai_chat(messages, model=model)
