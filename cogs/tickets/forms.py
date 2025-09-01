@@ -1,12 +1,12 @@
 # cogs/tickets/forms.py
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import discord
-from discord.ext import commands
 
 NSFW_ROLE_NAME = "NSFW 18+"
+
+# ---------- Embedek (Hub és lépései) ----------
 
 def hub_header_embed() -> discord.Embed:
     e = discord.Embed(
@@ -57,105 +57,106 @@ def ticket_opened_embed(category_label: str) -> discord.Embed:
     )
     return e
 
-class OpenTicketView(discord.ui.View):
-    """Persistent view attached to the Hub message."""
-    def __init__(self, cog: "TicketsCog"):
-        super().__init__(timeout=None)
-        self.cog = cog
-        btn = discord.ui.Button(
-            style=discord.ButtonStyle.success,
-            label="Open Ticket",
-            custom_id="isero:open_ticket"
-        )
-        btn.callback = self.on_open_clicked  # type: ignore
-        self.add_item(btn)
+# ---------- Thread-kezdő gombok (Én írom / ISERO írja) ----------
 
-    async def on_open_clicked(self, interaction: discord.Interaction):
-        view = CategoryView(self.cog)
+class ThreadStartView(discord.ui.View):
+    """
+    A privát thread első üzenetéhez csatolt view:
+    - Én írom meg → 800 karakteres modal + max 4 kép workflow
+    - ISERO írja meg → kategóriafüggő kérdések indítása
+    """
+    def __init__(self, runtime: "TicketsRuntime", *, timeout: float = 600):
+        super().__init__(timeout=timeout)
+        self.runtime = runtime
+
+    @discord.ui.button(label="Én írom meg", style=discord.ButtonStyle.primary, emoji="📝", custom_id="isero:thread:self")
+    async def btn_self(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.runtime.start_self_flow(interaction)
+
+    @discord.ui.button(label="ISERO írja meg", style=discord.ButtonStyle.secondary, emoji="🤖", custom_id="isero:thread:isero")
+    async def btn_isero(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.runtime.start_isero_flow(interaction)
+
+# 800 karakteres leírás modal – callbacket a runtime adja
+class OrderModal(discord.ui.Modal, title="Rendelés részletei (max 800 karakter)"):
+    def __init__(self, on_submit_cb):
+        super().__init__(timeout=180)
+        self.on_submit_cb = on_submit_cb
+        self.desc = discord.ui.TextInput(
+            label="Mit szeretnél?",
+            style=discord.TextStyle.paragraph,
+            max_length=800,
+            required=True,
+        )
+        self.add_item(self.desc)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.on_submit_cb(interaction, str(self.desc.value))
+
+# ---------- Hub view-k (Open Ticket → kategória → NSFW gate) ----------
+
+class OpenTicketView(discord.ui.View):
+    """A Hub üzenetre rátűzhető (akár perzisztens) gomb."""
+    def __init__(self, runtime: "TicketsRuntime"):
+        super().__init__(timeout=None)
+        self.runtime = runtime
+
+    @discord.ui.button(style=discord.ButtonStyle.success, label="Open Ticket",
+                       custom_id="isero:open_ticket")
+    async def on_open_clicked(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             embed=categories_embed(),
-            view=view,
+            view=CategoryView(self.runtime),
             ephemeral=True
         )
 
 class CategoryView(discord.ui.View):
-    """Ephemeral category picker; only visible to the user who clicked Open Ticket."""
-    def __init__(self, cog: "TicketsCog"):
+    """Csak annak látszik, aki megnyomta az Open Ticketet (ephemeral)."""
+    def __init__(self, runtime: "TicketsRuntime"):
         super().__init__(timeout=120)
-        self.cog = cog
+        self.runtime = runtime
 
-        b1 = discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="Mabinu",
-            custom_id="isero:cat:mabinu",
-            emoji="🧩"
-        )
-        b1.callback = self._wrap_handler("Mabinu")
-        self.add_item(b1)
+        self.add_item(discord.ui.Button(label="Mabinu", style=discord.ButtonStyle.secondary, emoji="🧩",
+                                        custom_id="isero:cat:mabinu"))
+        self.add_item(discord.ui.Button(label="Commission", style=discord.ButtonStyle.primary, emoji="🧾",
+                                        custom_id="isero:cat:commission"))
+        self.add_item(discord.ui.Button(label="NSFW 18+", style=discord.ButtonStyle.danger, emoji="🔞",
+                                        custom_id="isero:cat:nsfw"))
+        self.add_item(discord.ui.Button(label="General Help", style=discord.ButtonStyle.success, emoji="💬",
+                                        custom_id="isero:cat:general"))
 
-        b2 = discord.ui.Button(
-            style=discord.ButtonStyle.primary,  # SZÍN: blurple
-            label="Commission",
-            custom_id="isero:cat:commission",
-            emoji="🧾"
-        )
-        b2.callback = self._wrap_handler("Commission")
-        self.add_item(b2)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # ephemerálnál elvileg nem szükséges, de hagyjuk bent
+        return True
 
-        b3 = discord.ui.Button(
-            style=discord.ButtonStyle.danger,
-            label="NSFW 18+",
-            custom_id="isero:cat:nsfw",
-            emoji="🔞"
-        )
-        b3.callback = self._nsfw_gate
-        self.add_item(b3)
+    @discord.ui.button(label="Mabinu", style=discord.ButtonStyle.secondary, emoji="🧩")
+    async def _mabinu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.runtime.open_ticket_for(interaction, "Mabinu")
 
-        b4 = discord.ui.Button(
-            style=discord.ButtonStyle.success,
-            label="General Help",
-            custom_id="isero:cat:general",
-            emoji="💬"
-        )
-        b4.callback = self._wrap_handler("General Help")
-        self.add_item(b4)
+    @discord.ui.button(label="Commission", style=discord.ButtonStyle.primary, emoji="🧾")
+    async def _commission(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.runtime.open_ticket_for(interaction, "Commission")
 
-    def _wrap_handler(self, category_label: str):
-        async def handler(interaction: discord.Interaction):
-            await self.cog.open_ticket_for(interaction, category_label)
-        return handler
-
-    async def _nsfw_gate(self, interaction: discord.Interaction):
-        view = AgeGateView(self.cog)
+    @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger, emoji="🔞")
+    async def _nsfw(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             embed=nsfw_confirm_embed(),
-            view=view,
+            view=AgeGateView(self.runtime),
             ephemeral=True
         )
 
+    @discord.ui.button(label="General Help", style=discord.ButtonStyle.success, emoji="💬")
+    async def _general(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.runtime.open_ticket_for(interaction, "General Help")
+
 class AgeGateView(discord.ui.View):
-    def __init__(self, cog: "TicketsCog"):
+    def __init__(self, runtime: "TicketsRuntime"):
         super().__init__(timeout=90)
-        self.cog = cog
+        self.runtime = runtime
 
-        yes = discord.ui.Button(
-            style=discord.ButtonStyle.danger,
-            label="Yes, I'm 18+",
-            custom_id="isero:age:yes",
-            emoji="✅"
-        )
-        no = discord.ui.Button(
-            style=discord.ButtonStyle.secondary,
-            label="No",
-            custom_id="isero:age:no",
-            emoji="🚫"
-        )
-        yes.callback = self._confirm_yes  # type: ignore
-        no.callback = self._confirm_no   # type: ignore
-        self.add_item(yes)
-        self.add_item(no)
-
-    async def _confirm_yes(self, interaction: discord.Interaction):
+    @discord.ui.button(label="Yes, I'm 18+", style=discord.ButtonStyle.danger, emoji="✅",
+                       custom_id="isero:age:yes")
+    async def _confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         user = interaction.user
         assert guild is not None
@@ -188,82 +189,22 @@ class AgeGateView(discord.ui.View):
                     )
                 return
 
-        await self.cog.open_ticket_for(interaction, "NSFW 18+")
+        await self.runtime.open_ticket_for(interaction, "NSFW 18+")
 
-    async def _confirm_no(self, interaction: discord.Interaction):
+    @discord.ui.button(label="No", style=discord.ButtonStyle.secondary, emoji="🚫",
+                       custom_id="isero:age:no")
+    async def _confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
             "Understood. You can choose another category from the menu.",
             ephemeral=True
         )
 
-class TicketsCog(commands.Cog):
-    """Interface the View-ek hívásához; a tényleges Cog a tickets.py-ben van."""
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
+# ---------- A runtime felület, amit a tickets.py valósít meg ----------
 
-    async def open_ticket_for(self, interaction: discord.Interaction, category_label: str):
-        """Privát thread létrehozása a Hub csatornában a kattintó usernek."""
-        # >>> FONTOS: előbb válasz/defer, hogy a followup használható legyen
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.defer(ephemeral=True, thinking=False)
-            except Exception:
-                pass
-
-        channel = interaction.channel
-        user = interaction.user
-        guild = interaction.guild
-
-        if guild is None or channel is None or not isinstance(channel, discord.TextChannel):
-            await interaction.followup.send(
-                "This must be used in a standard **text channel**.",
-                ephemeral=True
-            )
-            return
-
-        perms = channel.permissions_for(guild.me)
-        if not (perms.create_private_threads and perms.send_messages):
-            await interaction.followup.send(
-                "I need `Create Private Threads` and `Send Messages` permissions here.",
-                ephemeral=True
-            )
-            return
-
-        now = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        safe_name = f"{category_label} • {user.name} • {now}"[:95]
-
-        try:
-            thread = await channel.create_thread(
-                name=safe_name,
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-                auto_archive_duration=1440
-            )
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "I don't have permission to create private threads here.",
-                ephemeral=True
-            )
-            return
-        except discord.HTTPException:
-            await interaction.followup.send(
-                "Couldn't create a private thread due to a Discord error. Please try again.",
-                ephemeral=True
-            )
-            return
-
-        try:
-            await thread.add_user(user)
-        except discord.HTTPException:
-            pass
-
-        intro = (
-            f"Hello {user.mention}! This is your private **{category_label}** ticket.\n"
-            "Please describe your request. A team member will join shortly."
-        )
-        await thread.send(intro)
-
-        await interaction.followup.send(
-            embed=ticket_opened_embed(category_label),
-            ephemeral=True
-        )
+class TicketsRuntime:
+    """
+    Csak egy „interface” típusjelzés a type hinthez. A tényleges implementáció a cogs/tickets/tickets.py-ben van.
+    """
+    async def open_ticket_for(self, interaction: discord.Interaction, category_label: str): ...
+    async def start_self_flow(self, interaction: discord.Interaction): ...
+    async def start_isero_flow(self, interaction: discord.Interaction): ...
