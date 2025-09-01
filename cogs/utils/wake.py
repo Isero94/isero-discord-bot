@@ -1,75 +1,48 @@
 # cogs/utils/wake.py
 from __future__ import annotations
-
 import os
 import re
 import unicodedata
-from typing import List
+from typing import Iterable, Optional
 
-def _csv_list(val: str | None) -> List[str]:
-    if not val:
-        return []
-    return [x.strip() for x in val.split(",") if x.strip()]
+WAKE_CORE = [w.strip() for w in os.getenv("WAKE_CORE", "isero,issero").split(",") if w.strip()]
+WAKE_PREFIXES_HU = [w.strip() for w in os.getenv("WAKE_PREFIXES_HU", "").split(",") if w.strip()]
+WAKE_PREFIXES_EN = [w.strip() for w in os.getenv("WAKE_PREFIXES_EN", "").split(",") if w.strip()]
+WAKE_MAX_PREFIX_TOKENS = int(os.getenv("WAKE_MAX_PREFIX_TOKENS", "2"))
 
-def _norm(text: str) -> str:
-    # kisbetű + ékezetelt betűk kiegyenesítése (hé -> he, helló -> hello)
-    t = unicodedata.normalize("NFD", text.lower())
-    t = "".join(ch for ch in t if not unicodedata.combining(ch))
-    # zajjelek lazán: vesszők, pontok stb. szóközzé
-    t = re.sub(r"[\s,;:._\-–—]+", " ", t).strip()
-    return t
+_WORD_SEP = r"[\s,;:.\-—–!?…]+"
+
+
+def _fold(s: str) -> str:
+    # kisbetű + ékezetlevétel + dupla szóköz gyalulás
+    s = s.lower()
+    s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _build_regex(core: Iterable[str], prefixes_hu: Iterable[str], prefixes_en: Iterable[str], max_pref: int) -> re.Pattern:
+    safe = lambda ws: "|".join(re.escape(_fold(w)) for w in ws if w)
+    core_pat = r"(?:%s)" % safe(core)
+    pref_pat = r"(?:%s)" % safe([*_fold(",".join(prefixes_hu)).split(","), *_fold(",".join(prefixes_en)).split(",")])
+    if not pref_pat:
+        # csak core
+        pat = rf"(?i)(?:^|{_WORD_SEP}){core_pat}(?:{_WORD_SEP}|$)"
+    else:
+        pat = rf"(?i)(?:^|{_WORD_SEP})(?:\b{pref_pat}\b{_WORD_SEP}{{0,2}}){{0,{max_pref}}}\b{core_pat}\b(?:{_WORD_SEP}|$)"
+    return re.compile(pat)
+
+
+_WAKE_RE = _build_regex(WAKE_CORE, WAKE_PREFIXES_HU, WAKE_PREFIXES_EN, WAKE_MAX_PREFIX_TOKENS)
+
 
 class WakeMatcher:
-    """
-    2-rétegű ébresztés:
-      - CORE: pl. "isero", "issero" (+ opcionális !?.)
-      - max N előtag engedve (hu+en), pl. "hej", "oke", "pls", "excuse me", stb.
-    Mentions (<@id>) mindig ébresztenek.
-    """
+    """Kétszintű wake: opcionális előtagok + core név. Mentions élveznek elsőbbséget."""
 
-    def __init__(self):
-        self.core = [w for w in _csv_list(os.getenv("WAKE_CORE", ""))] or ["isero", "issero"]
-        self.pref_hu = _csv_list(os.getenv("WAKE_PREFIXES_HU", ""))
-        self.pref_en = _csv_list(os.getenv("WAKE_PREFIXES_EN", ""))
-        self.max_pref = int(os.getenv("WAKE_MAX_PREFIX_TOKENS", "2") or "2")
+    def __init__(self, bot_user_id: Optional[int] = None):
+        self.bot_user_id = bot_user_id
 
-        # lazán engedjük a “issero/isero/iseero” nyújtásokat
-        core_pattern = r"(?:%s)" % "|".join([r"i+ss?e+ro+" for _ in self.core])
-        pre_list = [p for p in (self.pref_hu + self.pref_en) if p]
-        if pre_list:
-            pre_alt = "|".join(re.escape(_norm(p)) for p in pre_list)
-            pre_block = rf"(?:\b(?:{pre_alt})\b\s{{0,2}}){{0,{self.max_pref}}}"
-        else:
-            pre_block = r""
-
-        self._rx = re.compile(
-            rf"(?i)(?:^|[\s,;:.—-]){pre_block}\b{core_pattern}\b[!?.,]*"
-        )
-
-    def has_wake(self, content: str, *, bot_mention: str | None = None) -> bool:
-        if not content:
-            return False
-        if bot_mention and bot_mention in content:
+    def is_wake(self, content: str, mentions_bot: bool) -> bool:
+        if mentions_bot:
             return True
-        norm = _norm(content)
-        return bool(self._rx.search(norm))
-
-    def strip(self, content: str, *, bot_mention: str | None = None) -> str:
-        if not content:
-            return ""
-        t = content
-        if bot_mention:
-            t = t.replace(bot_mention, " ")
-        # a normalizált alapján keressük meg a match szegmenst, majd a “nyersben” nagyjából kivágjuk
-        norm = _norm(t)
-        m = self._rx.search(norm)
-        if not m:
-            return re.sub(r"\s+", " ", t).strip()
-        # durva kivágás: a match-hez tartozó szavakat a nyersből is eltüntetjük
-        span_text = m.group(0)
-        # egyszerű stratégia: a “nyers szövegben” is cseréljük a normált rész szavait
-        for token in span_text.split():
-            if len(token) >= 2:
-                t = re.sub(re.escape(token), " ", t, flags=re.IGNORECASE)
-        t = re.sub(r"\s+", " ", t).strip()
-        return t
+        return bool(_WAKE_RE.search(_fold(content)))
