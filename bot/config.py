@@ -31,13 +31,6 @@ class Settings(BaseSettings):
     AGENT_ALLOWED_CHANNELS: str | None = None
     NSFW_CHANNELS: str | None = None
 
-    # --- Ticket / Discord IDs ---
-    CHANNEL_TICKET_HUB: int | None = None
-    CATEGORY_TICKETS: int | None = None
-    ARCHIVE_CATEGORY_ID: int | None = None
-    STAFF_ROLE_ID: int | None = None
-    TICKET_COOLDOWN_SECONDS: int = Field(default=20)
-    NSFW_ROLE_NAME: str = Field(default="NSFW 18+")
 
     @property
     def allowed_channels(self) -> Set[int]:
