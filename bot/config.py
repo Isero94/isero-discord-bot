@@ -9,7 +9,6 @@ backwards compatibility with existing cogs.
 
 from __future__ import annotations
 
-from typing import Set
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
@@ -28,8 +27,6 @@ class Settings(BaseSettings):
     AGENT_DAILY_TOKEN_LIMIT: int = Field(default=20000)
 
     # --- Channel lists (comma separated) ---
-    AGENT_ALLOWED_CHANNELS: str | None = None
-    NSFW_CHANNELS: str | None = None
 
 
     @property
