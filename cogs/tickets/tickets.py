@@ -1,3 +1,6 @@
+# cogs/tickets/tickets.py
+from __future__ import annotations
+
 import os
 import re
 import time
@@ -24,16 +27,30 @@ ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
 STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
 TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
 
-# channel topic marker
+MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
+
+# ---- channel topic marker / helpers ----
 def owner_marker(user_id: int) -> str:
     return f"owner:{user_id}"
 
-# sanitize channel name
 def slugify(name: str) -> str:
     name = name.lower()
     name = re.sub(r"[^a-z0-9\-]+", "-", name)
     name = re.sub(r"-{2,}", "-", name).strip("-")
     return name or "ticket"
+
+def kind_from_topic(topic: str | None) -> str:
+    # topic pl.: "owner:123 | type:commission"
+    if not topic:
+        return "general-help"
+    m = re.search(r"type:([a-z0-9\-]+)", topic)
+    return m.group(1) if m else "general-help"
+
+def owner_from_topic(topic: str | None) -> int | None:
+    if not topic:
+        return None
+    m = re.search(r"owner:(\d+)", topic)
+    return int(m.group(1)) if m else None
 
 # ------- Views -------
 
@@ -56,27 +73,22 @@ class CategoryView(discord.ui.View):
         super().__init__(timeout=180)
         self.cog = cog
 
-    # ➜ Mebinu = PRIMARY (blurple)
     @discord.ui.button(label="Mebinu", style=discord.ButtonStyle.primary)
     async def mebinu(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "mebinu")
 
-    # ➜ Commission = SECONDARY (gray)
     @discord.ui.button(label="Commission", style=discord.ButtonStyle.secondary)
     async def commission(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "commission")
 
-    # ➜ NSFW = DANGER (red)
     @discord.ui.button(label="NSFW 18+", style=discord.ButtonStyle.danger)
     async def nsfw(self, i: discord.Interaction, _: discord.ui.Button):
-        # ask 18+ confirmation
         await i.response.send_message(
             "Are you 18 or older?",
             view=AgeView(self.cog),
             ephemeral=True
         )
 
-    # ➜ General Help = SUCCESS (green)
     @discord.ui.button(label="General Help", style=discord.ButtonStyle.success)
     async def general_help(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.on_category_chosen(i, "general-help")
@@ -103,16 +115,46 @@ class CloseTicketView(discord.ui.View):
     async def close_btn(self, i: discord.Interaction, _: discord.ui.Button):
         await self.cog.close_current_ticket(i)
 
+# === ÚJ: csatorna-kezdő view (Én írom / ISERO írja) + Modal ===
+
+class ChannelStartView(discord.ui.View):
+    def __init__(self, cog: "TicketsCog"):
+        super().__init__(timeout=600)
+        self.cog = cog
+
+    @discord.ui.button(label="Én írom meg", style=discord.ButtonStyle.primary, emoji="📝", custom_id="ticket:self")
+    async def self_write(self, i: discord.Interaction, _: discord.ui.Button):
+        await self.cog.start_self_flow(i)
+
+    @discord.ui.button(label="ISERO írja meg", style=discord.ButtonStyle.secondary, emoji="🤖", custom_id="ticket:isero")
+    async def isero_write(self, i: discord.Interaction, _: discord.ui.Button):
+        await self.cog.start_isero_flow(i)
+
+class OrderModal(discord.ui.Modal, title="Rendelés részletei (max 800 karakter)"):
+    def __init__(self, on_submit: T.Callable[[discord.Interaction, str], T.Awaitable[None]]):
+        super().__init__(timeout=180)
+        self._cb = on_submit
+        self.desc = discord.ui.TextInput(
+            label="Mit szeretnél?",
+            style=discord.TextStyle.paragraph,
+            max_length=800,
+            required=True,
+        )
+        self.add_item(self.desc)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self._cb(interaction, str(self.desc.value))
+
 # ------- The Cog -------
 
 class TicketsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.last_open: dict[int, float] = {}  # cooldown map
+        self.last_open: dict[int, float] = {}   # cooldown map
+        self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
-        # no logger usage needed; keep simple & safe
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
@@ -137,9 +179,11 @@ class TicketsCog(commands.Cog):
         title = f"Welcome — {kind.replace('-', ' ').title()}"
         e = discord.Embed(title=title)
         e.description = (
-            f"Hello {user.mention}! Please describe your request briefly.\n"
-            "A moderator will reply shortly.\n\n"
-            "*Use the button to close the ticket when you're done.*"
+            f"Hello {user.mention}! Ez itt a privát ticket csatornád.\n"
+            "Válassz lent: **Én írom meg** vagy **ISERO írja meg**.\n"
+            "• *Én írom meg* → rövid leírást adsz (max 800), majd max **4** referencia képet tölthetsz fel.\n"
+            "• *ISERO írja meg* → kérdésekben végigvisz a pontosításon.\n\n"
+            "*Használd a piros gombot, ha végeztél: Close Ticket.*"
         )
         return e
 
@@ -174,7 +218,7 @@ class TicketsCog(commands.Cog):
         name = slugify(f"{key}-{user.display_name}")
         topic = f"{owner_marker(user.id)} | type:{key}"
 
-        # permission overwrites: dict is REQUIRED
+        # permission overwrites
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(
@@ -196,9 +240,12 @@ class TicketsCog(commands.Cog):
             overwrites=overwrites
         )
 
-        await ch.send(embed=self.welcome_embed(user, key), view=CloseTicketView(self))
+        # üdv + kétgombos start + close gomb
+        await ch.send(embed=self.welcome_embed(user, key), view=ChannelStartView(self))
+        await ch.send(view=CloseTicketView(self))
         return ch
 
+    # --------- Category választás ---------
     async def on_category_chosen(self, i: discord.Interaction, key: str):
         # enforce one open + cooldown
         remain = self._cooldown_left(i.user.id)
@@ -224,6 +271,7 @@ class TicketsCog(commands.Cog):
         self.last_open[i.user.id] = time.time()
         await i.followup.send(f"Your ticket is ready: {ch.mention}", ephemeral=True)
 
+    # --------- Close ---------
     async def close_current_ticket(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         guild = T.cast(discord.Guild, i.guild)
@@ -247,6 +295,36 @@ class TicketsCog(commands.Cog):
             pass
 
         await i.response.send_message("Ticket closed & archived.", ephemeral=True)
+
+    # --------- ÚJ: „Én írom” flow ---------
+    async def start_self_flow(self, i: discord.Interaction):
+        ch = T.cast(discord.TextChannel, i.channel)
+        top_owner = owner_from_topic(ch.topic)
+        owner_id = top_owner or i.user.id
+
+        async def _submit_cb(ia: discord.Interaction, desc: str):
+            self.pending[ch.id] = {"owner_id": owner_id, "desc": desc, "left": MAX_ATTACH}
+            await ia.response.send_message(
+                f"✅ Leírás rögzítve. Most feltölthetsz **max {MAX_ATTACH}** képet ebbe a csatornába.\n"
+                f"Ha kész vagy, írd be: **kész**.",
+                ephemeral=True
+            )
+
+        await i.response.send_modal(OrderModal(_submit_cb))
+
+    # --------- ÚJ: „ISERO írja” flow (első kérdések) ---------
+    async def start_isero_flow(self, i: discord.Interaction):
+        ch = T.cast(discord.TextChannel, i.channel)
+        k = kind_from_topic(ch.topic)
+        if k.startswith("mebinu"):
+            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
+        elif k.startswith("commission"):
+            q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
+        elif k == "nsfw":
+            q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
+        else:
+            q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
+        await i.response.send_message(q, ephemeral=True)
 
     # --------- Slash commands ----------
     @app_commands.command(name="ticket_hub_setup", description="Post the Ticket Hub here.")
@@ -274,11 +352,36 @@ class TicketsCog(commands.Cog):
                     pass
         await i.followup.send(f"Cleanup done. Deleted messages: **{deleted}**", ephemeral=True)
 
-    # --------- Optional text fallback (if Message Content intent is enabled) ----------
+    # --------- Message listener ---------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
+
+        # 1) SELF-FLOW képfogás
+        ch = message.channel
+        if isinstance(ch, discord.TextChannel) and ch.id in self.pending:
+            st = self.pending[ch.id]
+            # csak a tulaj képei számítanak
+            owner_id = st.get("owner_id")
+            if owner_id and message.author.id != owner_id:
+                return
+            # 'kész' paranccsal lezárhatja
+            if message.content.strip().lower() == "kész":
+                self.pending.pop(ch.id, None)
+                await ch.send("✅ Rendben, rögzítettem a leírást. Hamarosan jelentkezünk.")
+                return
+            # csatolmányok számolása
+            if message.attachments:
+                take = min(len(message.attachments), st["left"])
+                st["left"] -= take
+                await ch.send(f"☑️ {take} kép társítva. Még **{st['left']}** fér el.")
+                if st["left"] <= 0:
+                    self.pending.pop(ch.id, None)
+                    await ch.send("✅ Köszi! Megvan minden. Hamarosan jelentkezünk a részletekkel.")
+                return
+
+        # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()
         if raw in ("/ticket_hub_setup", "ticket_hub_setup"):
             perms = message.author.guild_permissions
