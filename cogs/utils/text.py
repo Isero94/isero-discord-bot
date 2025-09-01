@@ -1,19 +1,17 @@
-# utils/text.py
+# cogs/utils/text.py
+from __future__ import annotations
 import re
-from typing import Tuple
 
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+MAX_REPLY_CHARS = 300  # kemény sapka; ENV-re is tehető, ha akarod
 
-def star_profanity(text: str, profane: set[str], free_words: int = 2) -> Tuple[str, int]:
-    """Visszaad: (csillagozott_szöveg, csúnya_szavak_száma)."""
-    count = 0
-    def repl(m: re.Match) -> str:
-        nonlocal count
-        w = m.group(0)
-        lw = w.lower()
-        if lw in profane:
-            count += 1
-            if count > free_words:
-                return w[0] + "*"*(max(0, len(w)-2)) + (w[-1] if len(w) > 1 else "")
-        return w
-    return _WORD_RE.sub(repl, text), count
+def shorten(s: str, limit: int = MAX_REPLY_CHARS) -> str:
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 1)].rstrip() + "…"
+
+def no_repeat(s: str) -> str:
+    # nagyon egyszerű ismétlésvágó
+    s = re.sub(r"(.)\1{4,}", r"\1\1\1", s)  # hosszan ismétlődő karakterek
+    s = re.sub(r"(\b.+?\b)(?:\s+\1\b){1,}", r"\1", s, flags=re.IGNORECASE)  # azonos szóduplázás
+    return s.strip()
