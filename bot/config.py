@@ -9,7 +9,7 @@ backwards compatibility with existing cogs.
 
 from __future__ import annotations
 
-from typing import Set
+from typing import Optional, Set
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
@@ -28,14 +28,14 @@ class Settings(BaseSettings):
     AGENT_DAILY_TOKEN_LIMIT: int = Field(default=20000)
 
     # --- Channel lists (comma separated) ---
-    AGENT_ALLOWED_CHANNELS: str | None = None
-    NSFW_CHANNELS: str | None = None
+    AGENT_ALLOWED_CHANNELS: Optional[str] = None
+    NSFW_CHANNELS: Optional[str] = None
 
     # --- Ticket / Discord IDs ---
-    CHANNEL_TICKET_HUB: int | None = None
-    CATEGORY_TICKETS: int | None = None
-    ARCHIVE_CATEGORY_ID: int | None = None
-    STAFF_ROLE_ID: int | None = None
+    CHANNEL_TICKET_HUB: Optional[int] = None
+    CATEGORY_TICKETS: Optional[int] = None
+    ARCHIVE_CATEGORY_ID: Optional[int] = None
+    STAFF_ROLE_ID: Optional[int] = None
     TICKET_COOLDOWN_SECONDS: int = Field(default=20)
     NSFW_ROLE_NAME: str = Field(default="NSFW 18+")
 
