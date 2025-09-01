@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     AGENT_ALLOWED_CHANNELS: str | None = None
     NSFW_CHANNELS: str | None = None
 
+
     @property
     def allowed_channels(self) -> Set[int]:
         return {
