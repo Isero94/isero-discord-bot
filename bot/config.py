@@ -1,47 +1,80 @@
-# config.py
-import os
-from typing import Optional, List
+"""Runtime configuration via environment variables.
 
-def _csv(name: str) -> List[int]:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return []
-    out = []
-    for p in raw.split(","):
-        p = p.strip()
-        if p and p.isdigit():
-            out.append(int(p))
-    return out
+This module exposes a :class:`Settings` object based on Pydantic's
+``BaseSettings``.  It parses values from the process environment and provides
+handy helpers for CSV → ``set[int]`` conversions.  The legacy constants
+(`OPENAI_API_KEY`, ``OPENAI_MODEL`` and ``PRECHAT_MSG_CHAR_LIMIT``) are kept for
+backwards compatibility with existing cogs.
+"""
 
-def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        return default
-    try:
-        return int(str(v).strip())
-    except ValueError:
-        return default
+from __future__ import annotations
 
-OPENAI_API_KEY         = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL_BASE      = os.getenv("OPENAI_MODEL_BASE", "gpt-4o-mini")
-OPENAI_MODEL_HEAVY     = os.getenv("OPENAI_MODEL_HEAVY", "gpt-4o")
-OPENAI_DAILY_TOKENS    = _env_int("OPENAI_DAILY_TOKENS", 20000)
+from typing import Optional, Set
 
-# Agent működés
-AGENT_REPLY_COOLDOWN   = _env_int("AGENT_REPLY_COOLDOWN_SEC", 15)
-AGENT_ALLOWED_CHANNELS = _csv("AGENT_ALLOWED_CHANNELS")
-FIRST10_USER_IDS       = _csv("FIRST10_USER_IDS")
+from pydantic import Field, validator
+from pydantic_settings import BaseSettings
 
-# Profanity + szabályok
-PROFANITY_FREE_WORDS   = _env_int("PROFANITY_FREE_WORDS", 2)
-PROFANITY_STAGE1       = _env_int("PROFANITY_STAGE1_POINTS", 5)
-PROFANITY_STAGE2       = _env_int("PROFANITY_STAGE2_POINTS", 3)
-PROFANITY_STAGE3       = _env_int("PROFANITY_STAGE3_POINTS", 2)
 
-# DB
-DATABASE_URL           = os.getenv("DATABASE_URL", "")
+class Settings(BaseSettings):
+    """Pydantic settings loaded from environment variables."""
 
-# Discord
-GUILD_ID               = _env_int("GUILD_ID")
-OWNER_ID               = _env_int("OWNER_ID")
-ALLOW_STAFF_FREESPEECH = os.getenv("ALLOW_STAFF_FREESPEECH", "false").lower() == "true"
+    ENV_SCHEMA_VERSION: int = 1
+
+    # --- OpenAI ---
+    OPENAI_API_KEY: str = Field(default="")
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini")
+    OPENAI_MODEL_HEAVY: str = Field(default="gpt-4o")
+    PRECHAT_MSG_CHAR_LIMIT: int = Field(default=300)
+    AGENT_DAILY_TOKEN_LIMIT: int = Field(default=20000)
+
+    # --- Channel lists (comma separated) ---
+    AGENT_ALLOWED_CHANNELS: Optional[str] = None
+    NSFW_CHANNELS: Optional[str] = None
+
+    # --- Ticket / Discord IDs ---
+    CHANNEL_TICKET_HUB: Optional[int] = None
+    CATEGORY_TICKETS: Optional[int] = None
+    ARCHIVE_CATEGORY_ID: Optional[int] = None
+    STAFF_ROLE_ID: Optional[int] = None
+    TICKET_COOLDOWN_SECONDS: int = Field(default=20)
+    NSFW_ROLE_NAME: str = Field(default="NSFW 18+")
+
+    @property
+    def allowed_channels(self) -> Set[int]:
+        return {
+            int(x)
+            for x in (self.AGENT_ALLOWED_CHANNELS or "").replace(" ", "").split(",")
+            if x
+        }
+
+    @property
+    def nsfw_channels(self) -> Set[int]:
+        return {
+            int(x)
+            for x in (self.NSFW_CHANNELS or "").replace(" ", "").split(",")
+            if x
+        }
+
+    @validator("AGENT_DAILY_TOKEN_LIMIT")
+    def _cap_tokens(cls, v: int) -> int:  # noqa: D401 - simple validation
+        if v <= 0 or v > 2_000_000:
+            raise ValueError("AGENT_DAILY_TOKEN_LIMIT out of range")
+        return v
+
+
+# Instantiate once for app-wide use
+settings = Settings()
+
+# Backwards compatibility constants ---------------------------------------
+OPENAI_API_KEY = settings.OPENAI_API_KEY
+OPENAI_MODEL = settings.OPENAI_MODEL
+PRECHAT_MSG_CHAR_LIMIT = settings.PRECHAT_MSG_CHAR_LIMIT
+
+__all__ = [
+    "Settings",
+    "settings",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "PRECHAT_MSG_CHAR_LIMIT",
+]
+
