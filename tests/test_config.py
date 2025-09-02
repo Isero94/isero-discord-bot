@@ -30,7 +30,6 @@ def test_token_limit_validation(monkeypatch):
         raise AssertionError("negative token limit should raise")
 
 
-
 def test_ticket_ids(monkeypatch):
     monkeypatch.setenv("CHANNEL_TICKET_HUB", "123")
     monkeypatch.setenv("CATEGORY_TICKETS", "456")
@@ -39,5 +38,4 @@ def test_ticket_ids(monkeypatch):
     assert cfg.CHANNEL_TICKET_HUB == 123
     assert cfg.CATEGORY_TICKETS == 456
     assert cfg.TICKET_COOLDOWN_SECONDS == 20
-
 
