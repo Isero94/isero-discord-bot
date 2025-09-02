@@ -3,9 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict
 
+import os
 import discord
 
 from bot.config import settings
+from cogs.utils.wake import WakeMatcher
+
+
+def _csv(val: str | None) -> list[str]:
+    if not val:
+        return []
+    raw = val.strip().strip('"').strip("'")
+    return [p.strip().lower() for p in raw.split(",") if p.strip()]
 
 
 @dataclass
@@ -23,6 +32,11 @@ class MessageContext:
     is_staff: bool
     locale: str
     user_display: str
+    trigger: str = "free_text"
+    was_mentioned: bool = False
+    has_wake_word: bool = False
+    msg_chars: int = 0
+    has_attachments: bool = False
     char_limit: int = settings.MAX_MSG_CHARS
     brief_char_limit: int = settings.BRIEF_MAX_CHARS
     brief_image_limit: int = settings.BRIEF_MAX_IMAGES
@@ -35,6 +49,16 @@ async def resolve(message: discord.Message) -> MessageContext:
     """Build a :class:`MessageContext` for ``message``."""
     channel = message.channel
     member = getattr(message, "author", None)
+    content = (message.content or "")
+    bot_member = getattr(getattr(message.guild, "me", None), "id", None)
+    bot_mention = f"<@{bot_member}>" if bot_member else None
+    wake = WakeMatcher()
+    extra_wake = _csv(os.getenv("WAKE_WORDS"))
+    low = content.lower()
+    was_mentioned = bool(bot_member and message.mentions and any(m.id == bot_member for m in message.mentions))
+    has_wake_word = wake.has_wake(content, bot_mention=bot_mention) or any(w in low for w in extra_wake)
+    msg_chars = len(content)
+    has_attachments = bool(getattr(message, "attachments", []))
     category = getattr(channel, "category", None)
     cat_id = category.id if category else None
     cat_name = category.name if category else None
@@ -92,4 +116,8 @@ async def resolve(message: discord.Message) -> MessageContext:
         is_staff=is_staff,
         locale=str(locale),
         user_display=display,
+        was_mentioned=was_mentioned,
+        has_wake_word=has_wake_word,
+        msg_chars=msg_chars,
+        has_attachments=has_attachments,
     )

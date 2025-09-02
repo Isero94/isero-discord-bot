@@ -15,6 +15,7 @@ from discord.ext import commands
 from cogs.utils.wake import WakeMatcher
 from cogs.utils.text import chunk_message
 from cogs.utils.context import resolve
+from utils.policy import ResponderPolicy
 
 log = logging.getLogger("bot.agent_gate")
 
@@ -178,19 +179,6 @@ def _is_implicit_channel(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
     return False
 
 
-_SILENT_CHANNEL_IDS = {
-    x
-    for x in [
-        ANNOUNCEMENTS_CHANNEL_ID,
-        RULES_CHANNEL_ID,
-        SERVER_GUIDE_CHANNEL_ID,
-        MOD_LOGS_CHANNEL_ID,
-        MOD_QUEUE_CHANNEL_ID,
-    ]
-    if x
-}
-
-
 _NOISE_WORDS = {"hello", "hi", "hey", "szia"}
 
 
@@ -347,17 +335,6 @@ class AgentGate(commands.Cog):
             return True
         return False
 
-    def _trigger_reason(self, message: discord.Message, raw: str) -> str:
-        if self.bot.user and self.bot.user.mentioned_in(message):
-            return "mention"
-        bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
-        low = raw.lower()
-        if WAKE.has_wake(raw, bot_mention=bot_mention) or any(w in low for w in WAKE_WORDS):
-            return "wake"
-        if _is_implicit_channel(message.channel):
-            return "implicit"
-        return "none"
-
     def channel_trigger_reason(self, channel: discord.abc.GuildChannel | discord.Thread) -> str:
         """Return trigger reason hint for /diag."""
         return "implicit" if _is_implicit_channel(channel) else "mention"
@@ -419,16 +396,26 @@ class AgentGate(commands.Cog):
         if not self._dedup_ok(message.author.id, raw):
             return
 
-        trigger = self._trigger_reason(message, raw)
-        if trigger == "none":
+        decision = ResponderPolicy.decide(ctx)
+        if not decision.should_reply or decision.mode == "silent":
             return
-        if ctx.channel_id in _SILENT_CHANNEL_IDS:
+        if decision.mode == "redirect":
             if BOT_COMMANDS_CHANNEL_ID:
                 dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
-                await message.channel.send(
-                    f"Let's move this to {dest}.",
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if ctx.is_ticket and ctx.ticket_type == "mebinu":
@@ -493,6 +480,7 @@ class AgentGate(commands.Cog):
 
         sys_msg = build_system_msg(pc)
         soft_cap, _ = decide_length_bounds(user_prompt, promo_focus)
+        soft_cap = min(soft_cap, decision.char_limit)
 
         guide = [
             f"Maximális hossz: {soft_cap} karakter. Rövid, feszes mondatok.",
