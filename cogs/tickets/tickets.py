@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 import asyncio
@@ -10,23 +9,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ------- Helpers: env ints safely -------
-def _env_int(name: str) -> int | None:
-    val = os.getenv(name, "").strip()
-    if not val:
-        return None
-    try:
-        return int(val)
-    except ValueError:
-        return None
+from bot.config import settings
 
-TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID")
-TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID")
-ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
-STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
-TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
+TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
+TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
+ARCHIVE_CATEGORY_ID   = settings.ARCHIVE_CATEGORY_ID
+STAFF_ROLE_ID         = settings.STAFF_ROLE_ID
+TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
-NSFW_ROLE_NAME        = os.getenv("NSFW_ROLE_NAME", "NSFW 18+")
+NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
 
 # ---- channel topic marker / helpers ----
