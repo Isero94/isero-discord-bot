@@ -33,9 +33,9 @@ class KeywordWatch(commands.Cog):
             return
         # Retrieve the AgentGate cog to access the database
         ag = self.bot.get_cog("AgentGate")
-        if not ag:
-            return
-        db = ag.db
+        db = getattr(ag, "db", None)
+        if db is None:
+            return  # no DB available – exit quietly
         # Award tokens based on the number of keyword matches
         await db.add_tokens(message.author.id, matches)
         # Increase marketing score for the user proportionally to keyword matches
