@@ -85,6 +85,13 @@ def test_owner_override_and_question():
     assert not res_silent.should_reply
 
 
+def test_owner_override_in_talk_category():
+    settings.CATEGORY_SOCIAL = 50
+    ctx = _ctx(channel_id=123, category_id=50, is_owner=True)
+    res = ResponderPolicy.decide(ctx)
+    assert res.reason == "owner_override" and res.should_reply
+
+
 def test_quiet_unquiet():
     ctx = _ctx(channel_id=5)
     ResponderPolicy.quiet_channel(5, ttl=60)

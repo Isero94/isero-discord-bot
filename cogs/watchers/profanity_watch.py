@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 import discord
 from discord.ext import commands
+from bot.config import settings
+from cogs.utils.throttling import should_redirect
 
 STORAGE = Path("storage")
 STORAGE.mkdir(exist_ok=True, parents=True)
@@ -165,40 +167,54 @@ class ProfanityGuard(commands.Cog):
         try:
             await message.delete()
         except Exception:
-            # ha nem tudja törölni, akkor csak reagál
             try:
                 await message.channel.send(f"{message.author.mention} {censored}")
             finally:
                 return
 
-        # webhook / fallback
-        try:
-            hook = await self.get_or_create_webhook(message.channel)  # type: ignore
-            files = []
-            for a in message.attachments:
-                try:
-                    fp = await a.to_file()
-                    files.append(fp)
-                except Exception:
-                    pass
+        is_nsfw_ch = getattr(message.channel, "is_nsfw", lambda: False)() or (
+            message.channel.id in settings.nsfw_channels
+        )
+        do_echo = True
+        if is_nsfw_ch:
+            do_echo = False
+        else:
+            key = f"echo:{message.guild.id}:{message.channel.id}:{message.author.id}"
+            do_echo = should_redirect(key, ttl=30)
 
-            content_to_send = censored
-            if hook:
-                await hook.send(
-                    content=content_to_send,
-                    username=message.author.display_name,
-                    avatar_url=message.author.display_avatar.url,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    files=files or None
-                )
-            else:
+        if do_echo:
+            try:
+                hook = await self.get_or_create_webhook(message.channel)  # type: ignore
+                files = []
+                for a in message.attachments:
+                    try:
+                        fp = await a.to_file()
+                        files.append(fp)
+                    except Exception:
+                        pass
+
+                content_to_send = censored
+                if hook:
+                    await hook.send(
+                        content=content_to_send,
+                        username=message.author.display_name,
+                        avatar_url=message.author.display_avatar.url,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        files=files or None,
+                    )
+                else:
+                    await message.channel.send(
+                        f"**{message.author.display_name}:** {content_to_send}",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        files=files or None,
+                    )
                 await message.channel.send(
-                    f"**{message.author.display_name}:** {content_to_send}",
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    files=files or None
+                    f"{message.author.mention} figyelj a szóhasználatra.",
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    delete_after=10,
                 )
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         # pontozás (INGYENES keret levonása)
         effective = max(0, count - self.free_per_msg)

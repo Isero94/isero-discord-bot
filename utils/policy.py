@@ -18,6 +18,23 @@ class DecideResult:
 class ResponderPolicy:
     quiet_until: Dict[int, float] = {}
 
+    @staticmethod
+    def is_talk_channel(ctx: MessageContext) -> bool:
+        """Return True if channel is considered a talk/general channel."""
+        talk_channels = {
+            settings.CHANNEL_GENERAL_CHAT,
+            settings.CHANNEL_BOT_COMMANDS,
+            settings.CHANNEL_SUGGESTIONS,
+        }
+        talk_categories = {
+            settings.CATEGORY_GAMING,
+            settings.CATEGORY_ART,
+            settings.CATEGORY_SOCIAL,
+        }
+        return ctx.channel_id in talk_channels or (
+            ctx.category_id in talk_categories if ctx.category_id is not None else False
+        )
+
     @classmethod
     def quiet_channel(cls, channel_id: int, ttl: int = 3600) -> None:
         cls.quiet_until[channel_id] = time.time() + ttl
@@ -52,18 +69,14 @@ class ResponderPolicy:
         if cls._is_quiet(cid) and not getattr(ctx, "is_owner", False):
             return DecideResult(False, "silent", "channel_quiet", limit)
 
-        talk = {
-            settings.CHANNEL_GENERAL_CHAT,
-            settings.CHANNEL_BOT_COMMANDS,
-            settings.CHANNEL_SUGGESTIONS,
-        }
+        talk = cls.is_talk_channel(ctx)
         if cid == settings.CHANNEL_TICKET_HUB and trigger == "free_text":
             return DecideResult(False, "silent", "ticket_hub_free_text", limit)
         if cid in silence_redirect:
             return DecideResult(True, "redirect", "noise_channel", limit)
 
         content = getattr(ctx, "content", "")
-        if cid in talk:
+        if talk:
             if getattr(ctx, "is_owner", False):
                 return DecideResult(True, "short", "owner_override", limit)
             if "?" in content:
