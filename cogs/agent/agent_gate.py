@@ -397,6 +397,9 @@ class AgentGate(commands.Cog):
             return
         if self.bot.user and message.author.id == self.bot.user.id:
             return
+        if TICKET_HUB_CHANNEL_ID and message.channel.id == TICKET_HUB_CHANNEL_ID:
+            log.info("hub-silence: skipped free-text in #ticket-hub")
+            return
         if not self._is_allowed_channel(message.channel):
             return
 
@@ -426,6 +429,19 @@ class AgentGate(commands.Cog):
                     f"Let's move this to {dest}.",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
+            return
+
+        if ctx.is_ticket and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         # ping-pong

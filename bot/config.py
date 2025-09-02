@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     NSFW_CHANNELS: Optional[str] = None
 
     # --- Discord IDs ---
+    GUILD_ID: Optional[int] = None
     OWNER_ID: Optional[int] = None
     CHANNEL_TICKET_HUB: Optional[int] = None
     CHANNEL_BOT_COMMANDS: Optional[int] = None
@@ -114,6 +115,7 @@ OPENAI_API_KEY = settings.OPENAI_API_KEY
 OPENAI_MODEL = settings.OPENAI_MODEL
 MAX_MSG_CHARS = settings.MAX_MSG_CHARS
 PRECHAT_MSG_CHAR_LIMIT = settings.MAX_MSG_CHARS  # legacy name
+GUILD_ID = settings.GUILD_ID
 
 __all__ = [
     "Settings",
@@ -122,5 +124,6 @@ __all__ = [
     "OPENAI_MODEL",
     "MAX_MSG_CHARS",
     "PRECHAT_MSG_CHAR_LIMIT",
+    "GUILD_ID",
 ]
 

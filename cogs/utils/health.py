@@ -54,6 +54,20 @@ class Health(commands.Cog):
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
+    @app_commands.command(name="whereami", description="Show current channel context")
+    @_guilds
+    async def whereami(self, interaction: discord.Interaction) -> None:
+        dummy = type("_M", (), {"channel": interaction.channel, "author": interaction.user})
+        ctx = await resolve(dummy)  # type: ignore[arg-type]
+        msg = (
+            f"channel={ctx.channel_name}/{ctx.channel_id} "
+            f"category={ctx.category_name}/{ctx.category_id} "
+            f"is_ticket={ctx.is_ticket} ticket_type={ctx.ticket_type} "
+            f"char_limit={ctx.char_limit} "
+            f"brief_limits={ctx.brief_char_limit}/{ctx.brief_image_limit}"
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Health(bot))
