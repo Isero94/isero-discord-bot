@@ -66,6 +66,8 @@ MAX_REPLY_CHARS_DISCORD = 1900
 
 TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID", 0) or 0
 TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID", 0) or 0
+BOT_COMMANDS_CHANNEL_ID = _env_int("CHANNEL_BOT_COMMANDS", 0) or 0
+SUGGESTIONS_CHANNEL_ID  = _env_int("CHANNEL_SUGGESTIONS", 0) or 0
 
 PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 AGENT_MASK_PROFANITY_TO_MODEL = _env_bool("AGENT_MASK_PROFANITY_TO_MODEL", True)
@@ -124,6 +126,41 @@ def _is_ticket_context(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
             return True
     except Exception:
         pass
+    return False
+
+
+def _is_implicit_channel(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
+    """Return True if messages in this channel can trigger implicitly."""
+    try:
+        if BOT_COMMANDS_CHANNEL_ID and getattr(ch, "id", 0) == BOT_COMMANDS_CHANNEL_ID:
+            return True
+        if SUGGESTIONS_CHANNEL_ID and getattr(ch, "id", 0) == SUGGESTIONS_CHANNEL_ID:
+            return True
+        if _is_ticket_context(ch):
+            return True
+        # fallback by name to reduce ENV coupling
+        name = getattr(ch, "name", "")
+        if name in {"bot-commands", "ticket-hub", "suggestions"}:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+_NOISE_WORDS = {"hello", "hi", "hey", "szia"}
+
+
+def _is_noise(text: str) -> bool:
+    t = text.strip()
+    if not t:
+        return True
+    if t in {"?", "??"}:
+        return True
+    words = t.split()
+    if len(words) <= 2:
+        base = re.sub(r"[!?.,]", "", t).lower()
+        if base in _NOISE_WORDS:
+            return True
     return False
 
 # ----------------------------
@@ -259,26 +296,21 @@ class AgentGate(commands.Cog):
             return True
         return False
 
-    def _is_wake(self, message: discord.Message) -> bool:
-        content = (message.content or "")
-
-        # ---- TICKET CSATORNÁKON: CSAK MEGEMLÍTÉSRE VÁLASZOLUNK ----
-        if _is_ticket_context(message.channel):
-            return self.bot.user is not None and self.bot.user.mentioned_in(message)
-
-        # normál csatornák:
+    def _trigger_reason(self, message: discord.Message, raw: str) -> str:
         if self.bot.user and self.bot.user.mentioned_in(message):
-            return True
-
+            return "mention"
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
-        if WAKE.has_wake(content, bot_mention=bot_mention):
-            return True
+        low = raw.lower()
+        if WAKE.has_wake(raw, bot_mention=bot_mention) or any(w in low for w in WAKE_WORDS):
+            return "wake"
+        if _is_implicit_channel(message.channel):
+            return "implicit"
+        return "none"
 
-        low = content.lower()
-        for w in WAKE_WORDS:
-            if re.search(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", low):
-                return True
-        return False
+    def channel_trigger_reason(self, channel: discord.abc.GuildChannel | discord.Thread) -> str:
+        """Return trigger reason hint for /diag."""
+        return "implicit" if _is_implicit_channel(channel) else "mention"
+
 
     def _dedup_ok(self, user_id: int, text: str) -> bool:
         now = time.time()
@@ -317,16 +349,21 @@ class AgentGate(commands.Cog):
             return
 
         raw = (message.content or "").strip()
-        if not raw:
+        if not raw or _is_noise(raw):
             return
 
-        # dedup & min-len (jegyzet: ticket csatornákon is él, de ott úgysem ébred fel figyelmeztetés nélkül)
-        if len(raw) < (AGENT_SESSION_MIN_CHARS or 1):
+        ticket_owner = _ticket_owner_id(message.channel)
+
+        if (
+            len(raw) < (AGENT_SESSION_MIN_CHARS or 1)
+            and not (ticket_owner and message.author.id == ticket_owner)
+        ):
             return
         if not self._dedup_ok(message.author.id, raw):
             return
 
-        if not self._is_wake(message):
+        trigger = self._trigger_reason(message, raw)
+        if trigger == "none":
             return
 
         # ping-pong
