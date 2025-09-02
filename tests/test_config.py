@@ -40,6 +40,12 @@ def test_ticket_ids(monkeypatch):
     assert cfg.TICKET_COOLDOWN_SECONDS == 20
 
 
+def test_channel_registry(monkeypatch):
+    monkeypatch.setenv("CHANNEL_GENERAL_CHAT", "111")
+    cfg = Settings()
+    assert cfg.channel_registry[111] == "CHANNEL_GENERAL_CHAT"
+
+
 def test_msg_limits(monkeypatch):
     monkeypatch.delenv("MAX_MSG_CHARS", raising=False)
     monkeypatch.delenv("BRIEF_MAX_CHARS", raising=False)

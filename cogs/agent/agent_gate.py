@@ -77,6 +77,12 @@ TICKETS_CATEGORY_ID = _env_int(
 ) or 0
 BOT_COMMANDS_CHANNEL_ID = _env_int("CHANNEL_BOT_COMMANDS", 0) or 0
 SUGGESTIONS_CHANNEL_ID = _env_int("CHANNEL_SUGGESTIONS", 0) or 0
+ANNOUNCEMENTS_CHANNEL_ID = _env_int("CHANNEL_ANNOUNCEMENTS", 0) or 0
+RULES_CHANNEL_ID = _env_int("CHANNEL_RULES", 0) or 0
+SERVER_GUIDE_CHANNEL_ID = _env_int("CHANNEL_SERVER_GUIDE", 0) or 0
+MOD_LOGS_CHANNEL_ID = _env_int("CHANNEL_MOD_LOGS", 0) or 0
+MOD_QUEUE_CHANNEL_ID = _env_int("CHANNEL_MOD_QUEUE", 0) or 0
+GENERAL_CHAT_CHANNEL_ID = _env_int("CHANNEL_GENERAL_CHAT", 0) or 0
 
 PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 AGENT_MASK_PROFANITY_TO_MODEL = _env_bool("AGENT_MASK_PROFANITY_TO_MODEL", True)
@@ -169,6 +175,19 @@ def _is_implicit_channel(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
     except Exception:
         pass
     return False
+
+
+_SILENT_CHANNEL_IDS = {
+    x
+    for x in [
+        ANNOUNCEMENTS_CHANNEL_ID,
+        RULES_CHANNEL_ID,
+        SERVER_GUIDE_CHANNEL_ID,
+        MOD_LOGS_CHANNEL_ID,
+        MOD_QUEUE_CHANNEL_ID,
+    ]
+    if x
+}
 
 
 _NOISE_WORDS = {"hello", "hi", "hey", "szia"}
@@ -396,6 +415,14 @@ class AgentGate(commands.Cog):
 
         trigger = self._trigger_reason(message, raw)
         if trigger == "none":
+            return
+        if message.channel.id in _SILENT_CHANNEL_IDS:
+            if BOT_COMMANDS_CHANNEL_ID:
+                dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
+                await message.channel.send(
+                    f"Let's move this to {dest}.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             return
 
         # ping-pong

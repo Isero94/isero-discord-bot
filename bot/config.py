@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings
@@ -28,11 +28,30 @@ class Settings(BaseSettings):
     AGENT_ALLOWED_CHANNELS: Optional[str] = None
     NSFW_CHANNELS: Optional[str] = None
 
-    # --- Ticket / Discord IDs ---
+    # --- Discord IDs ---
+    OWNER_ID: Optional[int] = None
     CHANNEL_TICKET_HUB: Optional[int] = None
+    CHANNEL_BOT_COMMANDS: Optional[int] = None
+    CHANNEL_SUGGESTIONS: Optional[int] = None
+    CHANNEL_GENERAL_CHAT: Optional[int] = None
+    CHANNEL_ANNOUNCEMENTS: Optional[int] = None
+    CHANNEL_RULES: Optional[int] = None
+    CHANNEL_SERVER_GUIDE: Optional[int] = None
+    CHANNEL_MOD_LOGS: Optional[int] = None
+    CHANNEL_MOD_QUEUE: Optional[int] = None
+    CHANNEL_GENERAL_LOGS: Optional[int] = None
     CATEGORY_TICKETS: Optional[int] = None
+    CATEGORY_MEBINU: Optional[int] = None
+    CATEGORY_NSFW: Optional[int] = None
+    CATEGORY_GAMING: Optional[int] = None
+    CATEGORY_ART: Optional[int] = None
+    CATEGORY_UTILITIES: Optional[int] = None
+    CATEGORY_STAFF: Optional[int] = None
+    CATEGORY_SOCIAL: Optional[int] = None
+    CATEGORY_INFO: Optional[int] = None
     ARCHIVE_CATEGORY_ID: Optional[int] = None
     STAFF_ROLE_ID: Optional[int] = None
+    STAFF_EXTRA_ROLE_IDS: Optional[str] = None
     TICKET_COOLDOWN_SECONDS: int = Field(default=20)
     NSFW_ROLE_NAME: str = Field(default="NSFW 18+")
 
@@ -50,6 +69,34 @@ class Settings(BaseSettings):
             int(x)
             for x in (self.NSFW_CHANNELS or "").replace(" ", "").split(",")
             if x
+        }
+
+    @property
+    def staff_extra_roles(self) -> Set[int]:
+        return {
+            int(x)
+            for x in (self.STAFF_EXTRA_ROLE_IDS or "").replace(" ", "").split(",")
+            if x
+        }
+
+    @property
+    def channel_registry(self) -> Dict[int, str]:
+        return {
+            getattr(self, attr): attr
+            for attr in dir(self)
+            if attr.startswith("CHANNEL_")
+            and isinstance(getattr(self, attr), int)
+            and getattr(self, attr)
+        }
+
+    @property
+    def category_registry(self) -> Dict[int, str]:
+        return {
+            getattr(self, attr): attr
+            for attr in dir(self)
+            if attr.startswith("CATEGORY_")
+            and isinstance(getattr(self, attr), int)
+            and getattr(self, attr)
         }
 
     @validator("AGENT_DAILY_TOKEN_LIMIT")
