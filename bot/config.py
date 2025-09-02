@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     STAFF_EXTRA_ROLE_IDS: Optional[str] = None
     TICKET_COOLDOWN_SECONDS: int = Field(default=20)
     NSFW_ROLE_NAME: str = Field(default="NSFW 18+")
+    OWNER_NL_ENABLED: bool = Field(default=False)
+    OWNER_ACTIVATION_PREFIX: str = Field(default="admin:")
 
     @property
     def allowed_channels(self) -> Set[int]:

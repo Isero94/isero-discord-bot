@@ -11,6 +11,8 @@ from typing import Dict, Optional, List, Tuple
 import httpx
 import discord
 from discord.ext import commands
+from bot.config import settings
+from cogs.agent.playerdb import PlayerDB
 
 from cogs.utils.wake import WakeMatcher
 from cogs.utils.text import chunk_message
@@ -368,6 +370,28 @@ class AgentGate(commands.Cog):
                 )
             ref = None
 
+    async def _handle_owner_cmd(self, message: discord.Message, cmd: str) -> None:
+        cmd_low = cmd.lower()
+        if cmd_low == "sync commands":
+            guild = discord.Object(id=settings.GUILD_ID) if settings.GUILD_ID else None
+            await self.bot.tree.sync(guild=guild)
+            await self._safe_send_reply(message, "commands synced")
+            return
+        if cmd_low == "diag here":
+            dummy = type("_M", (), {"channel": message.channel, "author": message.author})
+            ctx = await resolve(dummy)  # type: ignore[arg-type]
+            await self._safe_send_reply(message, f"channel={ctx.channel_name} ticket={ctx.is_ticket}")
+            return
+        m = re.match(r"summarize last (\d+)", cmd_low)
+        if m:
+            n = int(m.group(1))
+            lines = []
+            async for msg in message.channel.history(limit=n):
+                lines.append(f"{msg.author.display_name}: {msg.content}")
+            await self._safe_send_reply(message, "\n".join(lines))
+            return
+        await self._safe_send_reply(message, "unknown admin command")
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -382,6 +406,12 @@ class AgentGate(commands.Cog):
 
         raw = (message.content or "").strip()
         if not raw or _is_noise(raw):
+            return
+
+        if settings.OWNER_NL_ENABLED and raw.startswith(settings.OWNER_ACTIVATION_PREFIX):
+            if message.author.id == (settings.OWNER_ID or 0):
+                cmd = raw[len(settings.OWNER_ACTIVATION_PREFIX):].strip()
+                await self._handle_owner_cmd(message, cmd)
             return
 
         ctx = await resolve(message)
@@ -403,6 +433,19 @@ class AgentGate(commands.Cog):
             if BOT_COMMANDS_CHANNEL_ID:
                 dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                 await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":
@@ -524,4 +567,13 @@ class AgentGate(commands.Cog):
 
 # ---- setup ----
 async def setup(bot: commands.Bot):
-    await bot.add_cog(AgentGate(bot))
+    ag = AgentGate(bot)
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        ag.db = PlayerDB(db_url, owner_id=settings.OWNER_ID)
+        try:
+            await ag.db.start()
+        except Exception as e:
+            log.warning("PlayerDB init failed: %s", e)
+            ag.db = None
+    await bot.add_cog(ag)
