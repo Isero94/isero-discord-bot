@@ -36,8 +36,7 @@ class Health(commands.Cog):
             except Exception:
                 reason = "none"
         env = getattr(ag, "env_status", {}) if ag else {}
-        dummy = type("_M", (), {"channel": interaction.channel, "author": interaction.user})
-        ctx = await resolve(dummy)  # type: ignore[arg-type]
+        ctx = await resolve(interaction)
         msg = (
             f"trigger_reason={reason}\n"
             f"context channel={ctx.channel_name}/{ctx.channel_id} "
@@ -57,8 +56,7 @@ class Health(commands.Cog):
     @app_commands.command(name="whereami", description="Show current channel context")
     @_guilds
     async def whereami(self, interaction: discord.Interaction) -> None:
-        dummy = type("_M", (), {"channel": interaction.channel, "author": interaction.user})
-        ctx = await resolve(dummy)  # type: ignore[arg-type]
+        ctx = await resolve(interaction)
         msg = (
             f"channel={ctx.channel_name}/{ctx.channel_id} "
             f"category={ctx.category_name}/{ctx.category_id} "

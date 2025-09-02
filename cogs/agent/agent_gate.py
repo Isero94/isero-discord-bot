@@ -378,8 +378,7 @@ class AgentGate(commands.Cog):
             await self._safe_send_reply(message, "commands synced")
             return
         if cmd_low == "diag here":
-            dummy = type("_M", (), {"channel": message.channel, "author": message.author})
-            ctx = await resolve(dummy)  # type: ignore[arg-type]
+            ctx = await resolve(message)
             await self._safe_send_reply(message, f"channel={ctx.channel_name} ticket={ctx.is_ticket}")
             return
         m = re.match(r"summarize last (\d+)", cmd_low)
@@ -433,6 +432,19 @@ class AgentGate(commands.Cog):
             if BOT_COMMANDS_CHANNEL_ID:
                 dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                 await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":

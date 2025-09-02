@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 import os
 import discord
@@ -40,30 +40,47 @@ class MessageContext:
     char_limit: int = settings.MAX_MSG_CHARS
     brief_char_limit: int = settings.BRIEF_MAX_CHARS
     brief_image_limit: int = settings.BRIEF_MAX_IMAGES
+    slash_command: Optional[str] = None
 
 
 _TICKET_DB: Dict[int, str] = {}
 
 
-async def resolve(message: discord.Message) -> MessageContext:
-    """Build a :class:`MessageContext` for ``message``."""
-    channel = message.channel
-    member = getattr(message, "author", None)
-    content = (message.content or "")
-    bot_member = getattr(getattr(message.guild, "me", None), "id", None)
-    bot_mention = f"<@{bot_member}>" if bot_member else None
-    wake = WakeMatcher()
-    extra_wake = _csv(os.getenv("WAKE_WORDS"))
-    low = content.lower()
-    was_mentioned = bool(bot_member and message.mentions and any(m.id == bot_member for m in message.mentions))
-    has_wake_word = wake.has_wake(content, bot_mention=bot_mention) or any(w in low for w in extra_wake)
-    msg_chars = len(content)
-    has_attachments = bool(getattr(message, "attachments", []))
+async def resolve(obj: Any, *, trigger_reason: str | None = None) -> MessageContext:
+    """Build a :class:`MessageContext` for a :class:`discord.Message` or :class:`discord.Interaction`."""
+    if isinstance(obj, discord.Interaction):
+        channel = obj.channel
+        if channel is None and getattr(obj, "client", None):
+            try:
+                channel = await obj.client.fetch_channel(obj.channel_id)  # type: ignore[attr-defined]
+            except Exception:
+                channel = None
+        user = obj.user
+        content = ""
+        attachments: list[Any] = []
+        mentions: list[Any] = []
+        role_mentions: list[Any] = []
+        locale = getattr(obj, "locale", None) or getattr(getattr(obj, "guild", None), "preferred_locale", "en") or "en"
+        slash_cmd = getattr(getattr(obj, "command", None), "name", None)
+    elif isinstance(obj, discord.Message):
+        channel = getattr(obj, "channel", None)
+        user = getattr(obj, "author", None)
+        content = getattr(obj, "content", "") or ""
+        attachments = list(getattr(obj, "attachments", []))
+        mentions = list(getattr(obj, "mentions", []))
+        role_mentions = list(getattr(obj, "role_mentions", []))
+        locale = getattr(user, "locale", "en") or "en"
+        slash_cmd = None
+    else:
+        raise TypeError("resolve() needs Message or Interaction")
+
+    trigger = trigger_reason or ("slash" if isinstance(obj, discord.Interaction) else "free_text")
+    channel = channel or getattr(obj, "channel", None)
     category = getattr(channel, "category", None)
-    cat_id = category.id if category else None
-    cat_name = category.name if category else None
+    cat_id = getattr(category, "id", None)
+    cat_name = getattr(category, "name", None)
     is_ticket = cat_id == settings.CATEGORY_TICKETS
-    ticket_type = _TICKET_DB.get(channel.id)
+    ticket_type = _TICKET_DB.get(getattr(channel, "id", 0))
 
     topic = getattr(channel, "topic", "") or ""
     if not ticket_type and "ticket_type=" in topic:
@@ -88,24 +105,32 @@ async def resolve(message: discord.Message) -> MessageContext:
         except Exception:
             pass
     if not ticket_type:
-        name_low = channel.name.lower()
+        name_low = getattr(channel, "name", "").lower()
         for key in ("mebinu", "commission", "nsfw", "help"):
             if key in name_low:
                 ticket_type = key
                 break
     is_nsfw = getattr(channel, "is_nsfw", lambda: False)() or (
-        channel.id in settings.nsfw_channels
+        getattr(channel, "id", 0) in settings.nsfw_channels
     )
-    is_owner = bool(member and settings.OWNER_ID and member.id == settings.OWNER_ID)
-    roles = getattr(member, "roles", []) if member else []
+    bot_member = getattr(getattr(getattr(channel, "guild", None), "me", None), "id", None)
+    bot_mention = f"<@{bot_member}>" if bot_member else None
+    wake = WakeMatcher()
+    extra_wake = _csv(os.getenv("WAKE_WORDS"))
+    low = content.lower()
+    was_mentioned = bool(bot_member and mentions and any(getattr(m, "id", 0) == bot_member for m in mentions))
+    has_wake_word = wake.has_wake(content, bot_mention=bot_mention) or any(w in low for w in extra_wake)
+    msg_chars = len(content)
+    has_attachments = bool(attachments)
+    roles = getattr(user, "roles", []) if user else []
     staff_ids = {settings.STAFF_ROLE_ID} | settings.staff_extra_roles
     is_staff = any(getattr(r, "id", 0) in staff_ids for r in roles)
-    locale = getattr(member, "locale", "en") or "en"
-    display = getattr(member, "display_name", getattr(member, "name", ""))
+    is_owner = bool(user and settings.OWNER_ID and getattr(user, "id", 0) == settings.OWNER_ID)
+    display = getattr(user, "display_name", getattr(user, "name", ""))
     return MessageContext(
-        guild_id=getattr(channel.guild, "id", 0),
-        channel_id=channel.id,
-        channel_name=channel.name,
+        guild_id=getattr(getattr(channel, "guild", None), "id", 0),
+        channel_id=getattr(channel, "id", 0),
+        channel_name=getattr(channel, "name", ""),
         category_id=cat_id,
         category_name=cat_name,
         is_thread=bool(getattr(channel, "thread", False)),
@@ -116,8 +141,10 @@ async def resolve(message: discord.Message) -> MessageContext:
         is_staff=is_staff,
         locale=str(locale),
         user_display=display,
+        trigger=trigger,
         was_mentioned=was_mentioned,
         has_wake_word=has_wake_word,
         msg_chars=msg_chars,
         has_attachments=has_attachments,
+        slash_command=slash_cmd,
     )
