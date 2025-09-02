@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict
 
 import discord
 
@@ -28,7 +28,10 @@ class MessageContext:
     brief_image_limit: int = settings.BRIEF_MAX_IMAGES
 
 
-def resolve(message: discord.Message) -> MessageContext:
+_TICKET_DB: Dict[int, str] = {}
+
+
+async def resolve(message: discord.Message) -> MessageContext:
     """Build a :class:`MessageContext` for ``message``."""
     channel = message.channel
     member = getattr(message, "author", None)
@@ -36,13 +39,30 @@ def resolve(message: discord.Message) -> MessageContext:
     cat_id = category.id if category else None
     cat_name = category.name if category else None
     is_ticket = cat_id == settings.CATEGORY_TICKETS
-    ticket_type = None
+    ticket_type = _TICKET_DB.get(channel.id)
+
     topic = getattr(channel, "topic", "") or ""
-    if "ticket_type=" in topic:
+    if not ticket_type and "ticket_type=" in topic:
         for part in topic.split():
             if part.startswith("ticket_type="):
                 ticket_type = part.split("=", 1)[1]
                 break
+    if not ticket_type and isinstance(channel, discord.TextChannel):
+        try:
+            pins = await channel.pins()
+            for pin in pins:
+                for row in getattr(pin, "components", []):
+                    for comp in getattr(row, "children", []):
+                        cid = getattr(comp, "custom_id", "") or getattr(comp, "value", "")
+                        if cid:
+                            ticket_type = cid.split(":")[-1]
+                            break
+                    if ticket_type:
+                        break
+                if ticket_type:
+                    break
+        except Exception:
+            pass
     if not ticket_type:
         name_low = channel.name.lower()
         for key in ("mebinu", "commission", "nsfw", "help"):

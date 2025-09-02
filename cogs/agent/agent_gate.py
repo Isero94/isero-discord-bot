@@ -14,6 +14,7 @@ from discord.ext import commands
 
 from cogs.utils.wake import WakeMatcher
 from cogs.utils.text import chunk_message
+from cogs.utils.context import resolve
 
 log = logging.getLogger("bot.agent_gate")
 
@@ -403,6 +404,8 @@ class AgentGate(commands.Cog):
         if not raw or _is_noise(raw):
             return
 
+        ctx = await resolve(message)
+
         ticket_owner = _ticket_owner_id(message.channel)
 
         if (
@@ -416,7 +419,7 @@ class AgentGate(commands.Cog):
         trigger = self._trigger_reason(message, raw)
         if trigger == "none":
             return
-        if message.channel.id in _SILENT_CHANNEL_IDS:
+        if ctx.channel_id in _SILENT_CHANNEL_IDS:
             if BOT_COMMANDS_CHANNEL_ID:
                 dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                 await message.channel.send(
@@ -427,11 +430,35 @@ class AgentGate(commands.Cog):
 
         # ping-pong
         low = raw.lower()
+
+        where_q = re.search(
+            r"melyik csatorn|hol vagyunk|which channel|what channel|mi ez a ticket", low
+        )
+        if where_q:
+            if ctx.locale.startswith("hu"):
+                reply = (
+                    f"Csatorna: {message.channel.mention} (#{ctx.channel_name}), "
+                    f"Kategória: {ctx.category_name or 'nincs'}, "
+                    f"Ticket: {'igen' if ctx.is_ticket else 'nem'}"
+                )
+                if ctx.is_ticket:
+                    reply += f", Típus: {ctx.ticket_type or 'ismeretlen'}"
+            else:
+                reply = (
+                    f"Channel: {message.channel.mention} (#{ctx.channel_name}), "
+                    f"Category: {ctx.category_name or 'none'}, "
+                    f"Ticket: {'yes' if ctx.is_ticket else 'no'}"
+                )
+                if ctx.is_ticket:
+                    reply += f", Type: {ctx.ticket_type or 'unknown'}"
+            await self._safe_send_reply(message, reply)
+            return
+
         if re.search(r"\bping(el|elsz|elek|etek|etni)?\b", low):
             await self._safe_send_reply(message, "pong")
             return
 
-        # előkészítés
+        mention = self.bot.user and self.bot.user.mentioned_in(message)
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
         user_prompt = WAKE.strip(raw, bot_mention=bot_mention) or raw
         prompt_for_model = _mask_profane(user_prompt) if AGENT_MASK_PROFANITY_TO_MODEL else user_prompt
@@ -442,7 +469,11 @@ class AgentGate(commands.Cog):
             return
 
         pc = _load_player_card(message.author.id)
-        promo_focus = any(k in user_prompt.lower() for k in ["mebinu", "ár", "árak", "commission", "nsfw", "vásárl", "ticket"])
+        promo_focus = any(
+            k in user_prompt.lower() for k in ["mebinu", "ár", "árak", "commission", "nsfw", "vásárl", "ticket"]
+        )
+        if ctx.channel_id == GENERAL_CHAT_CHANNEL_ID:
+            promo_focus = False
 
         sys_msg = build_system_msg(pc)
         soft_cap, _ = decide_length_bounds(user_prompt, promo_focus)
@@ -451,9 +482,11 @@ class AgentGate(commands.Cog):
             f"Maximális hossz: {soft_cap} karakter. Rövid, feszes mondatok.",
             "Ne beszélj a saját működésedről vagy korlátaidról.",
         ]
-        if promo_focus and not _is_ticket_context(message.channel):
+        if promo_focus and not ctx.is_ticket:
             ticket_mention = _channel_mention(message.guild, TICKET_HUB_CHANNEL_ID, "ticket-hub")
-            guide.append(f"Ha MEBINU/ár/commission téma: 1–2 mondat + terelés ide: {ticket_mention}.")
+            guide.append(
+                f"Ha MEBINU/ár/commission téma: 1–2 mondat + terelés ide: {ticket_mention}."
+            )
 
         assistant_rules = " ".join(guide)
 

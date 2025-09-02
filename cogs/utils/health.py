@@ -37,7 +37,7 @@ class Health(commands.Cog):
                 reason = "none"
         env = getattr(ag, "env_status", {}) if ag else {}
         dummy = type("_M", (), {"channel": interaction.channel, "author": interaction.user})
-        ctx = resolve(dummy)
+        ctx = await resolve(dummy)  # type: ignore[arg-type]
         msg = (
             f"trigger_reason={reason}\n"
             f"context channel={ctx.channel_name}/{ctx.channel_id} "
