@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     OWNER_NL_ENABLED: bool = Field(default=False)
     OWNER_ACTIVATION_PREFIX: str = Field(default="admin:")
 
+    # --- Feature flags ---
+    FEATURES_PROFANITY_V2: bool = Field(default=True)
+    FEATURES_MEBINU_DIALOG_V1: bool = Field(default=False)
+    FEATURES_AI_GATE_V1: bool = Field(default=False)
+
+    # --- AI gate options ---
+    AI_MAX_CALLS_PER_USER_HOUR: int = Field(default=8)
+    AI_DEBOUNCE_MS: int = Field(default=1200)
+    AI_LONG_ANSWER_GATE: bool = Field(default=True)
+
     @property
     def allowed_channels(self) -> Set[int]:
         return {

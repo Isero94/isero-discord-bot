@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
+from cogs.tickets.mebinu_flow import MebinuSession
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
 TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
@@ -167,6 +168,7 @@ class TicketsCog(commands.Cog):
         self.bot = bot
         self.last_open: dict[int, float] = {}   # cooldown map
         self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
+        self.mebinu_sessions: dict[int, MebinuSession] = {}
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
@@ -327,12 +329,22 @@ class TicketsCog(commands.Cog):
     async def start_isero_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
-        if k.startswith("mebinu"):
-            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
-        elif k.startswith("commission"):
+        if settings.FEATURES_MEBINU_DIALOG_V1 and k.startswith("mebinu"):
+            session = MebinuSession()
+            self.mebinu_sessions[ch.id] = session
+            q = session.next_question()
+            await i.response.send_message(
+                f"{i.user.mention} {q}",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
+            return
+
+        if k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
         elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
+        elif k.startswith("mebinu"):
+            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
 
@@ -392,6 +404,22 @@ class TicketsCog(commands.Cog):
                     self.pending.pop(ch.id, None)
                     await ch.send("✅ Köszi! Megvan minden. Hamarosan jelentkezünk a részletekkel.")
                 return
+
+        # 1/b) MEBINU guided flow
+        if settings.FEATURES_MEBINU_DIALOG_V1 and isinstance(ch, discord.TextChannel) and ch.id in self.mebinu_sessions:
+            session = self.mebinu_sessions[ch.id]
+            owner_id = owner_from_topic(ch.topic)
+            if owner_id and message.author.id != owner_id:
+                return
+            session.record(message.content)
+            nxt = session.next_question()
+            if nxt:
+                await ch.send(f"{message.author.mention} {nxt} (még {session.remaining()} kérdés)")
+            else:
+                summary = session.summary()
+                await ch.send(f"Összegzés:\n{summary}")
+                self.mebinu_sessions.pop(ch.id, None)
+            return
 
         # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()

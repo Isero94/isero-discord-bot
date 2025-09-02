@@ -10,7 +10,13 @@ import discord
 
 def test_variants_kurva():
     pat = build_tolerant_pattern(["kurva"])
-    variants = ["kurva", "k u r v a", "k.u.r.v.a", "ku4v@"]
+    variants = [
+        "kurva",
+        "k u r v a",
+        "k.u.r.v.a",
+        "ku4v@",
+        "k\nu\nrva",
+    ]
     for v in variants:
         _, cnt = soft_censor_text(v, pat)
         assert cnt == 1
@@ -18,7 +24,7 @@ def test_variants_kurva():
 
 def test_variants_geci():
     pat = build_tolerant_pattern(["geci"])
-    variants = ["g3ci", "g e c i", "ge.ci", "gechi"]
+    variants = ["g3ci", "g e c i", "ge.ci", "gechi", "g\ne\nci"]
     for v in variants:
         _, cnt = soft_censor_text(v, pat)
         assert cnt == 1

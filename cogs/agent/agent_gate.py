@@ -299,6 +299,8 @@ class AgentGate(commands.Cog):
         self._user_cooldowns: Dict[int, float] = {}
         self._budget = Budget(day_key=time.strftime("%Y-%m-%d"))
         self._dedup: Dict[int, tuple[str, float]] = {}   # user_id -> (last_text, ts)
+        self._ai_calls: Dict[Tuple[int, int], int] = {}
+        self._last_msg: Dict[Tuple[int, int], float] = {}
         self.db = None  # compatibility for watchers that expect ag.db
         self.env_status = {
             "bot_commands": BOT_COMMANDS_CHANNEL_ID or "unset",
@@ -337,6 +339,34 @@ class AgentGate(commands.Cog):
             self._user_cooldowns[user_id] = time.time()
             return True
         return False
+
+    def _ai_gate(self, message: discord.Message, ctx) -> bool:
+        if not settings.FEATURES_AI_GATE_V1:
+            return True
+        text = (message.content or "").lower()
+        heur = False
+        if message.author.id == (settings.OWNER_ID or 0) and ResponderPolicy.is_talk_channel(ctx):
+            heur = True
+        elif "?" in text or any(k in text for k in ["hogyan", "miért", "segíts", "how", "why"]):
+            heur = True
+        elif ctx.is_ticket:
+            heur = True
+        elif ctx.was_mentioned or ctx.has_wake_word:
+            heur = True
+        if not heur:
+            return False
+        now = time.time()
+        hour = int(now // 3600)
+        key = (message.author.id, hour)
+        if self._ai_calls.get(key, 0) >= settings.AI_MAX_CALLS_PER_USER_HOUR:
+            return False
+        self._ai_calls[key] = self._ai_calls.get(key, 0) + 1
+        dkey = (message.author.id, message.channel.id)
+        last = self._last_msg.get(dkey, 0)
+        if now - last < (settings.AI_DEBOUNCE_MS / 1000):
+            return False
+        self._last_msg[dkey] = now
+        return True
 
     def channel_trigger_reason(self, channel: discord.abc.GuildChannel | discord.Thread) -> str:
         """Return trigger reason hint for /diag."""
@@ -549,6 +579,19 @@ class AgentGate(commands.Cog):
                 await self._safe_send_reply(message, part)
             return
 
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
+            return
+
         if ctx.is_ticket and ctx.ticket_type == "mebinu":
             questions = [
                 "Melyik termék vagy téma? (figura/variáns)",
@@ -624,7 +667,8 @@ class AgentGate(commands.Cog):
             )
 
         assistant_rules = " ".join(guide)
-
+        if not self._ai_gate(message, ctx):
+            return
         messages = [
             {"role": "system", "content": sys_msg},
             {"role": "system", "content": assistant_rules},

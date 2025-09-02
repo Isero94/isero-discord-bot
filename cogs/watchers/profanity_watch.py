@@ -70,6 +70,7 @@ CHAR_ALTS = {
     "g": ["g", "9", "q"],
     "s": ["s", "$", "5"],
     "r": ["r", "4"],
+    "t": ["t", "7"],
 }
 
 
@@ -85,7 +86,7 @@ def _word_to_pattern(word: str) -> str:
         alts = CHAR_ALTS.get(ch, [ch])
         group = "(?:" + "|".join(re.escape(a) for a in alts) + ")"
         parts.append(group)
-    joiner = r"[\W_]{0,2}?"
+    joiner = r"[^\w]{0,2}?"
     return joiner.join(parts)
 
 
@@ -95,7 +96,7 @@ def build_tolerant_pattern(words: List[str]) -> Pattern:
     if not patterns:
         patterns = [_word_to_pattern(w) for w in DEFAULT_WORDS]
     core = "|".join(patterns)
-    return re.compile(rf"(?i)(?<!\w)(?:{core})(?!\w)")
+    return re.compile(rf"(?i)(?<!\w)(?:{core})(?!\w)", re.DOTALL)
 
 def censor_token(token: str) -> str:
     if len(token) <= 2:
