@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
-from cogs.tickets.mebinu_flow import MebinuSession
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
 TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
@@ -331,19 +331,26 @@ class TicketsCog(commands.Cog):
         k = kind_from_topic(ch.topic)
         if settings.FEATURES_MEBINU_DIALOG_V1 and k.startswith("mebinu"):
             session = MebinuSession()
+            # region ISERO PATCH MEBINU
+            # Guard: régi sablon ág letiltása + előtöltés korábbi üzenetből
+            async for m in ch.history(limit=1, before=i.created_at):
+                if m.author.id == i.user.id:
+                    session.prefill(m.content)
+                    break
             self.mebinu_sessions[ch.id] = session
             q = session.next_question()
             await i.response.send_message(
-                f"{i.user.mention} {q}",
+                f"{i.user.mention} {q} [{session.step+1}/{len(QUESTIONS)}]",
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
+            # endregion ISERO PATCH MEBINU
             return
 
         if k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
         elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
-        elif k.startswith("mebinu"):
+        elif k.startswith("mebinu") and not settings.FEATURES_MEBINU_DIALOG_V1:
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
@@ -414,7 +421,11 @@ class TicketsCog(commands.Cog):
             session.record(message.content)
             nxt = session.next_question()
             if nxt:
-                await ch.send(f"{message.author.mention} {nxt} (még {session.remaining()} kérdés)")
+                # region ISERO PATCH MEBINU
+                await ch.send(
+                    f"{message.author.mention} {nxt} [{session.step+1}/{len(QUESTIONS)}]"
+                )
+                # endregion ISERO PATCH MEBINU
             else:
                 summary = session.summary()
                 await ch.send(f"Összegzés:\n{summary}")

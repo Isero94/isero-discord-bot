@@ -16,6 +16,7 @@ def test_variants_kurva():
         "k.u.r.v.a",
         "ku4v@",
         "k\nu\nrva",
+        "kuuurva",
     ]
     for v in variants:
         _, cnt = soft_censor_text(v, pat)

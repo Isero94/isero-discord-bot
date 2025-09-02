@@ -31,6 +31,31 @@ class MebinuSession:
             self.answers.append(text[:300])
             self.step += 1
 
+    # region ISERO PATCH MEBINU_PREFILL
+    COLOR_WORDS = {
+        "piros",
+        "fekete",
+        "kék",
+        "zöld",
+        "sárga",
+        "lila",
+        "fehér",
+        "barna",
+        "szürke",
+        "arany",
+        "ezüst",
+    }
+
+    def prefill(self, text: str) -> None:
+        low = text.lower()
+        colors = [c for c in self.COLOR_WORDS if c in low]
+        if colors:
+            # terméktípus implicit Mebinu
+            self.answers.append("Mebinu")
+            self.answers.append(" ".join(colors)[:300])
+            self.step = 2
+    # endregion ISERO PATCH MEBINU_PREFILL
+
     def remaining(self) -> int:
         return max(0, len(QUESTIONS) - self.step)
 

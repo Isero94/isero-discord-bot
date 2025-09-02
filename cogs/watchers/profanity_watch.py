@@ -84,9 +84,14 @@ def _word_to_pattern(word: str) -> str:
     parts: List[str] = []
     for ch in word:
         alts = CHAR_ALTS.get(ch, [ch])
-        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")"
+        # region ISERO PATCH PROFANITY_V2
+        # Bővítés: karakternyújtás támogatása (pl. "kuuurva")
+        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")+"
         parts.append(group)
-    joiner = r"[^\w]{0,2}?"
+    # region ISERO PATCH PROFANITY_V2
+    # Bővítés: c|ch alternáció már CHAR_ALTS-ban, de separator szélesítése + \n kezelés
+    joiner = r"(?:[\s_.,\-\d]{0,3})"
+    # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 
 
