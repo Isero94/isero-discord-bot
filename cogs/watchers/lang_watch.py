@@ -23,9 +23,9 @@ class LangWatch(commands.Cog):
             return
 
         ag = self.bot.get_cog("AgentGate")
-        if not ag or not getattr(ag, "db", None):
+        db = getattr(ag, "db", None) if ag else None
+        if db is None:
             return
-        db = ag.db  # type: ignore
 
         text = message.content.strip()
         # engagement: hossz + formázás

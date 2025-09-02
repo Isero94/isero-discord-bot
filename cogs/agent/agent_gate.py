@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 
 from cogs.utils.wake import WakeMatcher
+from cogs.utils.text import chunk_message
 
 log = logging.getLogger("bot.agent_gate")
 
@@ -64,8 +65,24 @@ MAX_REPLY_CHARS_STRICT = 300
 MAX_REPLY_CHARS_LOOSE  = 800
 MAX_REPLY_CHARS_DISCORD = 1900
 
-TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID", 0) or 0
-TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID", 0) or 0
+_deprecated_keys_detected = False
+if os.getenv("TICKET_HUB_CHANNEL_ID") or os.getenv("CATEGORY_TICKETS"):
+    _deprecated_keys_detected = True
+
+TICKET_HUB_CHANNEL_ID = _env_int(
+    "CHANNEL_TICKET_HUB", _env_int("TICKET_HUB_CHANNEL_ID", 0)
+) or 0
+TICKETS_CATEGORY_ID = _env_int(
+    "TICKETS_CATEGORY_ID", _env_int("CATEGORY_TICKETS", 0)
+) or 0
+BOT_COMMANDS_CHANNEL_ID = _env_int("CHANNEL_BOT_COMMANDS", 0) or 0
+SUGGESTIONS_CHANNEL_ID = _env_int("CHANNEL_SUGGESTIONS", 0) or 0
+ANNOUNCEMENTS_CHANNEL_ID = _env_int("CHANNEL_ANNOUNCEMENTS", 0) or 0
+RULES_CHANNEL_ID = _env_int("CHANNEL_RULES", 0) or 0
+SERVER_GUIDE_CHANNEL_ID = _env_int("CHANNEL_SERVER_GUIDE", 0) or 0
+MOD_LOGS_CHANNEL_ID = _env_int("CHANNEL_MOD_LOGS", 0) or 0
+MOD_QUEUE_CHANNEL_ID = _env_int("CHANNEL_MOD_QUEUE", 0) or 0
+GENERAL_CHAT_CHANNEL_ID = _env_int("CHANNEL_GENERAL_CHAT", 0) or 0
 
 PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 AGENT_MASK_PROFANITY_TO_MODEL = _env_bool("AGENT_MASK_PROFANITY_TO_MODEL", True)
@@ -112,19 +129,81 @@ def _ticket_owner_id(ch: discord.abc.GuildChannel | discord.Thread) -> Optional[
     m = re.search(r"owner:(\d+)", topic or "")
     return int(m.group(1)) if m else None
 
+_warned_missing_ticket_category = False
+
+
 def _is_ticket_context(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
+    global _warned_missing_ticket_category
     try:
         if TICKET_HUB_CHANNEL_ID and ch.id == TICKET_HUB_CHANNEL_ID:
             return True
         cat_id = None
+        cat = None
         if isinstance(ch, discord.Thread) and ch.parent:
             cat_id = getattr(ch.parent, "category_id", 0) or 0
+            cat = getattr(ch.parent, "category", None)
         else:
             cat_id = getattr(ch, "category_id", 0) or 0
-        if TICKETS_CATEGORY_ID and cat_id == TICKETS_CATEGORY_ID:
+            cat = getattr(ch, "category", None)
+        if TICKETS_CATEGORY_ID:
+            if cat_id == TICKETS_CATEGORY_ID:
+                return True
+        else:
+            if cat and getattr(cat, "name", "").lower() == "tickets":
+                if not _warned_missing_ticket_category:
+                    log.warning("TICKETS_CATEGORY_ID not set; falling back to category name 'tickets'")
+                    _warned_missing_ticket_category = True
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_implicit_channel(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
+    """Return True if messages in this channel can trigger implicitly."""
+    try:
+        if BOT_COMMANDS_CHANNEL_ID and getattr(ch, "id", 0) == BOT_COMMANDS_CHANNEL_ID:
+            return True
+        if SUGGESTIONS_CHANNEL_ID and getattr(ch, "id", 0) == SUGGESTIONS_CHANNEL_ID:
+            return True
+        if _is_ticket_context(ch):
+            return True
+        # fallback by name to reduce ENV coupling
+        name = getattr(ch, "name", "")
+        if name in {"bot-commands", "ticket-hub", "suggestions"}:
             return True
     except Exception:
         pass
+    return False
+
+
+_SILENT_CHANNEL_IDS = {
+    x
+    for x in [
+        ANNOUNCEMENTS_CHANNEL_ID,
+        RULES_CHANNEL_ID,
+        SERVER_GUIDE_CHANNEL_ID,
+        MOD_LOGS_CHANNEL_ID,
+        MOD_QUEUE_CHANNEL_ID,
+    ]
+    if x
+}
+
+
+_NOISE_WORDS = {"hello", "hi", "hey", "szia"}
+
+
+def _is_noise(text: str) -> bool:
+    t = text.strip()
+    if not t:
+        return True
+    if t in {"?", "??"}:
+        return True
+    words = t.split()
+    if len(words) <= 2:
+        base = re.sub(r"[!?.,]", "", t).lower()
+        if base in _NOISE_WORDS:
+            return True
     return False
 
 # ----------------------------
@@ -228,6 +307,14 @@ class AgentGate(commands.Cog):
         self._user_cooldowns: Dict[int, float] = {}
         self._budget = Budget(day_key=time.strftime("%Y-%m-%d"))
         self._dedup: Dict[int, tuple[str, float]] = {}   # user_id -> (last_text, ts)
+        self.db = None  # compatibility for watchers that expect ag.db
+        self.env_status = {
+            "bot_commands": BOT_COMMANDS_CHANNEL_ID or "unset",
+            "suggestions": SUGGESTIONS_CHANNEL_ID or "unset",
+            "tickets_category": TICKETS_CATEGORY_ID or "unset",
+            "wake_words_count": len(WAKE_WORDS),
+            "deprecated_keys_detected": _deprecated_keys_detected,
+        }
 
     def _reset_budget_if_new_day(self):
         today = time.strftime("%Y-%m-%d")
@@ -259,25 +346,21 @@ class AgentGate(commands.Cog):
             return True
         return False
 
-    def _is_wake(self, message: discord.Message) -> bool:
-        content = (message.content or "")
+    def _trigger_reason(self, message: discord.Message, raw: str) -> str:
         if self.bot.user and self.bot.user.mentioned_in(message):
-            return True
-
-        if _is_ticket_context(message.channel):
-            owner_id = _ticket_owner_id(message.channel)
-            if owner_id and message.author.id == owner_id:
-                return True
-
+            return "mention"
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
-        if WAKE.has_wake(content, bot_mention=bot_mention):
-            return True
+        low = raw.lower()
+        if WAKE.has_wake(raw, bot_mention=bot_mention) or any(w in low for w in WAKE_WORDS):
+            return "wake"
+        if _is_implicit_channel(message.channel):
+            return "implicit"
+        return "none"
 
-        low = content.lower()
-        for w in WAKE_WORDS:
-            if re.search(rf"(^|\s){re.escape(w)}(\s|[!?.,:]|$)", low):
-                return True
-        return False
+    def channel_trigger_reason(self, channel: discord.abc.GuildChannel | discord.Thread) -> str:
+        """Return trigger reason hint for /diag."""
+        return "implicit" if _is_implicit_channel(channel) else "mention"
+
 
     def _dedup_ok(self, user_id: int, text: str) -> bool:
         now = time.time()
@@ -292,19 +375,20 @@ class AgentGate(commands.Cog):
         return True
 
     async def _safe_send_reply(self, message: discord.Message, text: str):
-        text = clamp_len(text)
         ref = message.to_reference(fail_if_not_exists=False)
-        try:
-            await message.channel.send(
-                content=text,
-                reference=ref,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException:
-            await message.channel.send(
-                content=text,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+        for chunk in chunk_message(clamp_len(text)):
+            try:
+                await message.channel.send(
+                    content=chunk,
+                    reference=ref,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                await message.channel.send(
+                    content=chunk,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            ref = None
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -316,15 +400,13 @@ class AgentGate(commands.Cog):
             return
 
         raw = (message.content or "").strip()
-        if not raw:
+        if not raw or _is_noise(raw):
             return
 
         ticket_owner = _ticket_owner_id(message.channel)
-        mention = self.bot.user and self.bot.user.mentioned_in(message)
 
         if (
             len(raw) < (AGENT_SESSION_MIN_CHARS or 1)
-            and not mention
             and not (ticket_owner and message.author.id == ticket_owner)
         ):
             return
@@ -332,7 +414,16 @@ class AgentGate(commands.Cog):
         if not self._dedup_ok(message.author.id, raw):
             return
 
-        if not self._is_wake(message):
+        trigger = self._trigger_reason(message, raw)
+        if trigger == "none":
+            return
+        if message.channel.id in _SILENT_CHANNEL_IDS:
+            if BOT_COMMANDS_CHANNEL_ID:
+                dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
+                await message.channel.send(
+                    f"Let's move this to {dest}.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             return
 
         if not (ticket_owner and message.author.id == ticket_owner):
