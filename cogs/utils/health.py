@@ -5,6 +5,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.utils.context import resolve
+from config import GUILD_ID
+
+if GUILD_ID:
+    _guilds = app_commands.guilds(discord.Object(id=GUILD_ID))
+else:
+    def _guilds(func):
+        return func
 
 
 class Health(commands.Cog):
@@ -14,10 +21,12 @@ class Health(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="ping", description="Check if the bot is alive")
+    @_guilds
     async def ping(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Pong!")
 
     @app_commands.command(name="diag", description="Show basic diagnostic info")
+    @_guilds
     async def diag(self, interaction: discord.Interaction) -> None:
         ag = self.bot.get_cog("AgentGate")
         reason = "none"
