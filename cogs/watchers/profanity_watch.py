@@ -5,21 +5,39 @@ import asyncio
 import json
 import os
 import re
+import unicodedata
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Pattern
+
+import yaml
 
 import discord
 from discord.ext import commands
+from bot.config import settings
+from cogs.utils.throttling import should_redirect
 
 STORAGE = Path("storage")
 STORAGE.mkdir(exist_ok=True, parents=True)
 SCORES_FILE = STORAGE / "profanity_scores.json"
 
+# YAML alap szókészlet
+PROF_YAML = Path("config/profanity.yml")
 DEFAULT_WORDS = [
-    # bővítsd kedvedre az ENV-ben (PROFANITY_WORDS)
-    "kurva", "fasz", "faszom", "geci", "picsa", "szar",
-    "fuck", "shit", "bitch", "ass",
+    "kurva",
+    "geci",
+    "fasz",
+    "picsa",
+    "buzi",
+    "köcsög",
+    "szar",
+    "anyád",
+    "fuck",
+    "shit",
+    "bitch",
+    "dick",
+    "asshole",
+    "cunt",
 ]
 
 def load_scores() -> Dict[str, int]:
@@ -42,15 +60,42 @@ def get_env_int(key: str, default: int) -> int:
     except Exception:
         return default
 
-def build_word_pattern(words: List[str]) -> re.Pattern:
-    # lazább egyezés: ékezet nélkül is, szóhatárokon belül
-    escaped = [re.escape(w.strip()) for w in words if w.strip()]
-    if not escaped:
-        escaped = [re.escape(w) for w in DEFAULT_WORDS]
-    # pl. (kurva|fasz|...)
-    core = "|".join(escaped)
-    # szóköz/kötőjel/írásjel variációk ellen minimál tolerancia
-    return re.compile(rf"(?i)\b(?:{core})\b", re.UNICODE)
+CHAR_ALTS = {
+    "a": ["a", "á", "4", "@"],
+    "e": ["e", "é", "3"],
+    "i": ["i", "í", "1", "!"],
+    "o": ["o", "ó", "ö", "ő", "0"],
+    "u": ["u", "ú", "ü", "ű"],
+    "c": ["c", "k", "ch"],
+    "g": ["g", "9", "q"],
+    "s": ["s", "$", "5"],
+    "r": ["r", "4"],
+}
+
+
+def _strip_diacritics(text: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in nfkd if unicodedata.category(ch) != "Mn")
+
+
+def _word_to_pattern(word: str) -> str:
+    word = _strip_diacritics(word.lower())
+    parts: List[str] = []
+    for ch in word:
+        alts = CHAR_ALTS.get(ch, [ch])
+        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")"
+        parts.append(group)
+    joiner = r"[\W_]{0,2}?"
+    return joiner.join(parts)
+
+
+def build_tolerant_pattern(words: List[str]) -> Pattern:
+    """Build regex pattern tolerant to leetspeak, spacing and diacritics."""
+    patterns = [_word_to_pattern(w.strip()) for w in words if w.strip()]
+    if not patterns:
+        patterns = [_word_to_pattern(w) for w in DEFAULT_WORDS]
+    core = "|".join(patterns)
+    return re.compile(rf"(?i)(?<!\w)(?:{core})(?!\w)")
 
 def censor_token(token: str) -> str:
     if len(token) <= 2:
@@ -79,8 +124,17 @@ class ProfanityGuard(commands.Cog):
         self.bot = bot
         self.scores: Dict[str, int] = load_scores()
         words_env = os.getenv("PROFANITY_WORDS", "")
-        words = DEFAULT_WORDS if not words_env.strip() else [w.strip() for w in words_env.split(",")]
-        self.word_pat = build_word_pattern(words)
+        if words_env.strip():
+            words = [w.strip() for w in words_env.split(",")]
+        elif PROF_YAML.exists():
+            try:
+                data = yaml.safe_load(PROF_YAML.read_text(encoding="utf-8")) or {}
+                words = data.get("words", DEFAULT_WORDS)
+            except Exception:
+                words = DEFAULT_WORDS
+        else:
+            words = DEFAULT_WORDS
+        self.word_pat = build_tolerant_pattern(words)
 
         self.free_per_msg = get_env_int("PROFANITY_FREE_WORDS_PER_MSG", 2)
         self.lvl1 = get_env_int("PROFANITY_LVL1_THRESHOLD", 3)
@@ -161,44 +215,67 @@ class ProfanityGuard(commands.Cog):
         if count == 0:
             return  # nincs mit tenni
 
+        is_nsfw_ch = getattr(message.channel, "is_nsfw", lambda: False)() or (
+            message.channel.id in settings.nsfw_channels
+        )
+        if is_nsfw_ch:
+            await self.log(
+                message.guild,
+                f"📝 NSFW profanity by {message.author} in {message.channel.mention}: {original}\n{message.jump_url}",
+            )
+            return
+
         # üzenet törlése + repost csillagozva
         try:
             await message.delete()
         except Exception:
-            # ha nem tudja törölni, akkor csak reagál
             try:
                 await message.channel.send(f"{message.author.mention} {censored}")
             finally:
                 return
 
-        # webhook / fallback
-        try:
-            hook = await self.get_or_create_webhook(message.channel)  # type: ignore
-            files = []
-            for a in message.attachments:
-                try:
-                    fp = await a.to_file()
-                    files.append(fp)
-                except Exception:
-                    pass
+        do_echo = True
+        key = f"echo:{message.guild.id}:{message.channel.id}:{message.author.id}"
+        do_echo = should_redirect(key, ttl=30)
 
-            content_to_send = censored
-            if hook:
-                await hook.send(
-                    content=content_to_send,
-                    username=message.author.display_name,
-                    avatar_url=message.author.display_avatar.url,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    files=files or None
-                )
-            else:
+        if do_echo:
+            try:
+                hook = await self.get_or_create_webhook(message.channel)  # type: ignore
+                files = []
+                for a in message.attachments:
+                    try:
+                        fp = await a.to_file()
+                        files.append(fp)
+                    except Exception:
+                        pass
+
+                content_to_send = censored
+                if hook:
+                    await hook.send(
+                        content=content_to_send,
+                        username=message.author.display_name,
+                        avatar_url=message.author.display_avatar.url,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        files=files or None,
+                    )
+                else:
+                    await message.channel.send(
+                        f"**{message.author.display_name}:** {content_to_send}",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        files=files or None,
+                    )
                 await message.channel.send(
-                    f"**{message.author.display_name}:** {content_to_send}",
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    files=files or None
+                    f"{message.author.mention} figyelj a szóhasználatra.",
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    delete_after=10,
                 )
-        except Exception:
-            pass
+            except Exception:
+                pass
+
+        await self.log(
+            message.guild,
+            f"⚠️ Profanity by {message.author} in {message.channel.mention}: {original}\n{message.jump_url}",
+        )
 
         # pontozás (INGYENES keret levonása)
         effective = max(0, count - self.free_per_msg)
