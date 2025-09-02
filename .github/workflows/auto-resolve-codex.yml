@@ -1,0 +1,43 @@
+name: Auto-resolve conflicts (prefer Codex branch)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  resolve:
+    # Csak ha ugyanebből a repóból jön a PR és az ág neve "codex/..."
+    if: >
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'codex/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "codex-auto-merge"
+          git config user.email "codex@users.noreply.github.com"
+
+      - name: Merge main preferring PR branch
+        run: |
+          git fetch origin main
+          # FONTOS: a checkoutolt ág a PR (Codex), ezért -X ours => a Codex nyer.
+          git merge origin/main -X ours --no-edit || true
+          # Ha maradt conflict marker, álljunk le (ne toljunk rosszat):
+          if git grep -n '<<<<<<<\|>>>>>>>'; then
+            echo "Conflict markers remain"; exit 1; fi
+
+      - name: Push resolved branch
+        run: |
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
