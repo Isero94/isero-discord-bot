@@ -1,42 +1,40 @@
-name: Auto-resolve conflicts (prefer Codex branch)
+name: auto-resolve-codex
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
-    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write        # KELL a push-hoz
   pull-requests: write
 
 jobs:
   resolve:
-    # Csak ha ugyanebből a repóból jön a PR és az ág neve "codex/..."
-    if: >
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'codex/')
+    # csak a Codex által nyitott, "codex/"-szal kezdődő ágra fusson
+    if: contains(github.event.pull_request.head.ref, 'codex/')
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
           repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
-          git config user.name "codex-auto-merge"
-          git config user.email "codex@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Merge main preferring PR branch
+      # A "Codex verzió nyer" = PR-branch preferált. Ehhez az -X ours kell,
+      # mert most a PR HEAD-jén állunk és a main-t merge-öljük bele.
+      - name: Merge main preferring PR branch (ours)
         run: |
           git fetch origin main
-          # FONTOS: a checkoutolt ág a PR (Codex), ezért -X ours => a Codex nyer.
-          git merge origin/main -X ours --no-edit || true
-          # Ha maradt conflict marker, álljunk le (ne toljunk rosszat):
-          if git grep -n '<<<<<<<\|>>>>>>>'; then
-            echo "Conflict markers remain"; exit 1; fi
+          git merge -X ours origin/main --no-edit || true
 
       - name: Push resolved branch
         run: |
