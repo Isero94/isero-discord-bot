@@ -47,12 +47,18 @@ class Bot(commands.Bot):
         # App parancsok gyors szinkron
         try:
             if GUILD_ID:
-                cmds = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                log.info(f"App commands synced to guild {GUILD_ID}")
+                guild_obj = discord.Object(id=GUILD_ID)
+                await self.tree.sync(guild=guild_obj)
+                cmds = [c.name for c in self.tree.get_commands(guild=guild_obj)]
+                log.info("App commands synced to guild %s", GUILD_ID)
+                log.info("Registered app commands (guild %s): %s", GUILD_ID, cmds)
+                log.info("Registered app commands count: %d", len(cmds))
             else:
-                cmds = await self.tree.sync()
+                synced = await self.tree.sync()
+                cmds = [c.name for c in synced]
                 log.info("App commands synced (global)")
-            log.info("Registered app commands: %s", [c.name for c in cmds])
+                log.info("Registered app commands (global): %s", cmds)
+                log.info("Registered app commands count: %d", len(cmds))
         except Exception:
             log.exception("Command sync failed")
 
