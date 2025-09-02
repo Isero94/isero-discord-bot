@@ -32,6 +32,7 @@ class MessageContext:
     is_staff: bool
     locale: str
     user_display: str
+    content: str = ""
     trigger: str = "free_text"
     was_mentioned: bool = False
     has_wake_word: bool = False
@@ -141,6 +142,7 @@ async def resolve(obj: Any, *, trigger_reason: str | None = None) -> MessageCont
         is_staff=is_staff,
         locale=str(locale),
         user_display=display,
+        content=content,
         trigger=trigger,
         was_mentioned=was_mentioned,
         has_wake_word=has_wake_word,
