@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 import asyncio
@@ -10,23 +9,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ------- Helpers: env ints safely -------
-def _env_int(name: str) -> int | None:
-    val = os.getenv(name, "").strip()
-    if not val:
-        return None
-    try:
-        return int(val)
-    except ValueError:
-        return None
+from bot.config import settings
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS
 
-TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID")
-TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID")
-ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
-STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
-TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
+TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
+TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
+ARCHIVE_CATEGORY_ID   = settings.ARCHIVE_CATEGORY_ID
+STAFF_ROLE_ID         = settings.STAFF_ROLE_ID
+TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
-NSFW_ROLE_NAME        = os.getenv("NSFW_ROLE_NAME", "NSFW 18+")
+NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
 
 # ---- channel topic marker / helpers ----
@@ -176,6 +168,7 @@ class TicketsCog(commands.Cog):
         self.bot = bot
         self.last_open: dict[int, float] = {}   # cooldown map
         self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
+        self.mebinu_sessions: dict[int, MebinuSession] = {}
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
@@ -336,12 +329,29 @@ class TicketsCog(commands.Cog):
     async def start_isero_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
-        if k.startswith("mebinu"):
-            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
-        elif k.startswith("commission"):
+        if settings.FEATURES_MEBINU_DIALOG_V1 and k.startswith("mebinu"):
+            session = MebinuSession()
+            # region ISERO PATCH MEBINU
+            # Guard: régi sablon ág letiltása + előtöltés korábbi üzenetből
+            async for m in ch.history(limit=1, before=i.created_at):
+                if m.author.id == i.user.id:
+                    session.prefill(m.content)
+                    break
+            self.mebinu_sessions[ch.id] = session
+            q = session.next_question()
+            await i.response.send_message(
+                f"{i.user.mention} {q} [{session.step+1}/{len(QUESTIONS)}]",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
+            # endregion ISERO PATCH MEBINU
+            return
+
+        if k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
         elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
+        elif k.startswith("mebinu") and not settings.FEATURES_MEBINU_DIALOG_V1:
+            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
 
@@ -401,6 +411,26 @@ class TicketsCog(commands.Cog):
                     self.pending.pop(ch.id, None)
                     await ch.send("✅ Köszi! Megvan minden. Hamarosan jelentkezünk a részletekkel.")
                 return
+
+        # 1/b) MEBINU guided flow
+        if settings.FEATURES_MEBINU_DIALOG_V1 and isinstance(ch, discord.TextChannel) and ch.id in self.mebinu_sessions:
+            session = self.mebinu_sessions[ch.id]
+            owner_id = owner_from_topic(ch.topic)
+            if owner_id and message.author.id != owner_id:
+                return
+            session.record(message.content)
+            nxt = session.next_question()
+            if nxt:
+                # region ISERO PATCH MEBINU
+                await ch.send(
+                    f"{message.author.mention} {nxt} [{session.step+1}/{len(QUESTIONS)}]"
+                )
+                # endregion ISERO PATCH MEBINU
+            else:
+                summary = session.summary()
+                await ch.send(f"Összegzés:\n{summary}")
+                self.mebinu_sessions.pop(ch.id, None)
+            return
 
         # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()
