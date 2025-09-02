@@ -44,14 +44,31 @@ def get_env_int(key: str, default: int) -> int:
     except Exception:
         return default
 
+LEET = {
+    "a": "aá@4",
+    "e": "eé3",
+    "i": "ií1l!",
+    "o": "oó0",
+    "u": "uú",
+    "s": "s$5",
+    "c": "c"
+}
+
+
+def _word_to_pattern(w: str) -> str:
+    parts = []
+    for ch in w:
+        chars = LEET.get(ch.lower(), ch.lower())
+        parts.append(f"[{re.escape(chars)}]+\W*")
+    return "".join(parts).rstrip("\\W*")
+
+
 def build_word_pattern(words: List[str]) -> re.Pattern:
-    # lazább egyezés: ékezet nélkül is, szóhatárokon belül
-    escaped = [re.escape(w.strip()) for w in words if w.strip()]
-    if not escaped:
-        escaped = [re.escape(w) for w in DEFAULT_WORDS]
-    # pl. (kurva|fasz|...)
-    core = "|".join(escaped)
-    # szóköz/kötőjel/írásjel variációk ellen minimál tolerancia
+    """Create a tolerant regex pattern from a list of banned words."""
+    patterns = [_word_to_pattern(w.strip()) for w in words if w.strip()]
+    if not patterns:
+        patterns = [_word_to_pattern(w) for w in DEFAULT_WORDS]
+    core = "|".join(patterns)
     return re.compile(rf"(?i)\b(?:{core})\b", re.UNICODE)
 
 def censor_token(token: str) -> str:
@@ -163,6 +180,16 @@ class ProfanityGuard(commands.Cog):
         if count == 0:
             return  # nincs mit tenni
 
+        is_nsfw_ch = getattr(message.channel, "is_nsfw", lambda: False)() or (
+            message.channel.id in settings.nsfw_channels
+        )
+        if is_nsfw_ch:
+            await self.log(
+                message.guild,
+                f"📝 NSFW profanity by {message.author} in {message.channel.mention}: {original}\n{message.jump_url}",
+            )
+            return
+
         # üzenet törlése + repost csillagozva
         try:
             await message.delete()
@@ -172,15 +199,9 @@ class ProfanityGuard(commands.Cog):
             finally:
                 return
 
-        is_nsfw_ch = getattr(message.channel, "is_nsfw", lambda: False)() or (
-            message.channel.id in settings.nsfw_channels
-        )
         do_echo = True
-        if is_nsfw_ch:
-            do_echo = False
-        else:
-            key = f"echo:{message.guild.id}:{message.channel.id}:{message.author.id}"
-            do_echo = should_redirect(key, ttl=30)
+        key = f"echo:{message.guild.id}:{message.channel.id}:{message.author.id}"
+        do_echo = should_redirect(key, ttl=30)
 
         if do_echo:
             try:
@@ -215,6 +236,11 @@ class ProfanityGuard(commands.Cog):
                 )
             except Exception:
                 pass
+
+        await self.log(
+            message.guild,
+            f"⚠️ Profanity by {message.author} in {message.channel.mention}: {original}\n{message.jump_url}",
+        )
 
         # pontozás (INGYENES keret levonása)
         effective = max(0, count - self.free_per_msg)
