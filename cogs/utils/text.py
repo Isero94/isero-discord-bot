@@ -15,6 +15,14 @@ def shorten(s: str, limit: Optional[int] = None) -> str:
     return s[: max(0, limit - 1)].rstrip() + "…"
 
 
+def truncate_by_chars(s: str, limit: int) -> str:
+    """Cut string to ``limit`` characters, appending ellipsis if truncated."""
+    s = s.strip()
+    if len(s) <= limit:
+        return s
+    return s[: max(0, limit - 1)].rstrip() + "…"
+
+
 def no_repeat(s: str) -> str:
     """Collapse long character runs and duplicate words."""
     s = re.sub(r"(.)\1{4,}", r"\1\1\1", s)

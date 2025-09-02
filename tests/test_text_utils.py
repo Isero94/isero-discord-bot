@@ -1,7 +1,7 @@
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from cogs.utils.text import shorten, no_repeat, chunk_message
+from cogs.utils.text import shorten, no_repeat, chunk_message, truncate_by_chars
 
 
 def test_shorten_truncates_with_ellipsis():
@@ -23,3 +23,8 @@ def test_chunk_message_splits_with_prefix():
     assert len(chunks) == 3
     assert chunks[0].startswith("(1/3) ")
     assert all(len(c) <= 300 for c in chunks)
+
+
+def test_truncate_by_chars():
+    assert truncate_by_chars("hello world", 5) == "hell…"
+    assert truncate_by_chars("short", 10) == "short"

@@ -15,9 +15,15 @@ class DecideResult:
 
 class ResponderPolicy:
 
+    @staticmethod
+    def get_reply_limit(ctx: MessageContext) -> int:
+        """Return max character count for replies in this context."""
+        # For now every context shares the same hard cap (300 chars)
+        return 300
+
     @classmethod
     def decide(cls, ctx: MessageContext) -> DecideResult:
-        limit = settings.MAX_MSG_CHARS
+        limit = cls.get_reply_limit(ctx)
         silence_redirect = {
             settings.CHANNEL_ANNOUNCEMENTS,
             settings.CHANNEL_RULES,

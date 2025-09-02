@@ -1,6 +1,7 @@
 from utils.policy import ResponderPolicy, DecideResult
 from cogs.utils.context import MessageContext
 from bot.config import settings
+from utils.policy import ResponderPolicy
 
 
 def _ctx(**kwargs):
@@ -58,3 +59,8 @@ def test_nsfw_redirect_if_not_allowed():
     ctx = _ctx(is_ticket=True, ticket_type="nsfw", category_id=0)
     res = ResponderPolicy.decide(ctx)
     assert res.mode == "redirect"
+
+
+def test_reply_limit_default():
+    ctx = _ctx()
+    assert ResponderPolicy.get_reply_limit(ctx) == 300

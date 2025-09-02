@@ -15,7 +15,8 @@ from bot.config import settings
 from cogs.agent.playerdb import PlayerDB
 
 from cogs.utils.wake import WakeMatcher
-from cogs.utils.text import chunk_message
+from cogs.utils.text import chunk_message, truncate_by_chars
+from cogs.utils.throttling import should_redirect
 from cogs.utils.context import resolve
 from utils.policy import ResponderPolicy
 
@@ -429,9 +430,24 @@ class AgentGate(commands.Cog):
         if not decision.should_reply or decision.mode == "silent":
             return
         if decision.mode == "redirect":
-            if BOT_COMMANDS_CHANNEL_ID:
-                dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
-                await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            key = f"redir:{message.channel.id}:{message.author.id}:{decision.reason}"
+            if should_redirect(key):
+                if BOT_COMMANDS_CHANNEL_ID:
+                    dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
+                    await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":
@@ -569,8 +585,7 @@ class AgentGate(commands.Cog):
             return
 
         reply = sanitize_model_reply(reply)
-        if len(reply) > soft_cap:
-            reply = reply[:soft_cap].rstrip() + "…"
+        reply = truncate_by_chars(reply, soft_cap)
 
         try:
             await self._safe_send_reply(message, reply)
