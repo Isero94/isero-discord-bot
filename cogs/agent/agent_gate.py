@@ -227,6 +227,7 @@ class AgentGate(commands.Cog):
         self._user_cooldowns: Dict[int, float] = {}
         self._budget = Budget(day_key=time.strftime("%Y-%m-%d"))
         self._dedup: Dict[int, tuple[str, float]] = {}   # user_id -> (last_text, ts)
+        self.db = None  # compatibility for watchers that expect ag.db
 
     def _reset_budget_if_new_day(self):
         today = time.strftime("%Y-%m-%d")
