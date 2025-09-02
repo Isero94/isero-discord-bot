@@ -27,10 +27,10 @@ class RoleSync(commands.Cog):
         member = member or ctx.author
         # get AgentGate cog to access the database
         ag = self.bot.get_cog("AgentGate")
-        if ag is None:
-            await ctx.send("AgentGate is not available.")
+        db = getattr(ag, "db", None) if ag else None
+        if db is None:
+            await ctx.send("AgentGate DB is not available.")
             return
-        db = ag.db
         try:
             card = await db.get_card(member.id)
         except Exception:
