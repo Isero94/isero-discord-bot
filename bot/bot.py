@@ -21,6 +21,7 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 
 EXTENSIONS = [
     "cogs.utils.logsetup",
+    "cogs.utils.health",
     "cogs.agent.agent_gate",
     "cogs.tickets.tickets",
     "cogs.ranks.progress",
