@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands
 
 from cogs.utils.wake import WakeMatcher
+from cogs.utils.text import chunk_message
 
 log = logging.getLogger("bot.agent_gate")
 
@@ -355,19 +356,20 @@ class AgentGate(commands.Cog):
         return True
 
     async def _safe_send_reply(self, message: discord.Message, text: str):
-        text = clamp_len(text)
         ref = message.to_reference(fail_if_not_exists=False)
-        try:
-            await message.channel.send(
-                content=text,
-                reference=ref,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        except discord.HTTPException:
-            await message.channel.send(
-                content=text,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
+        for chunk in chunk_message(clamp_len(text)):
+            try:
+                await message.channel.send(
+                    content=chunk,
+                    reference=ref,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                await message.channel.send(
+                    content=chunk,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            ref = None
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

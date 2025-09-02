@@ -4,6 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.utils.context import resolve
+
 
 class Health(commands.Cog):
     """Minimal diagnostic utilities."""
@@ -25,8 +27,13 @@ class Health(commands.Cog):
             except Exception:
                 reason = "none"
         env = getattr(ag, "env_status", {}) if ag else {}
+        ctx = resolve(interaction.channel)
         msg = (
             f"trigger_reason={reason}\n"
+            f"context channel={ctx.channel_name}/{ctx.channel_id} "
+            f"category={ctx.category_name}/{ctx.category_id} "
+            f"is_ticket={ctx.is_ticket} ticket_type={ctx.ticket_type} "
+            f"char_limit={ctx.char_limit}\n"
             f"env bot_commands={env.get('bot_commands', 'unset')} "
             f"suggestions={env.get('suggestions', 'unset')} "
             f"tickets_category={env.get('tickets_category', 'unset')} "

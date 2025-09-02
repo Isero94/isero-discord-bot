@@ -17,8 +17,12 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = Field(default="")
     OPENAI_MODEL: str = Field(default="gpt-4o-mini")
     OPENAI_MODEL_HEAVY: str = Field(default="gpt-4o")
-    PRECHAT_MSG_CHAR_LIMIT: int = Field(default=300)
     AGENT_DAILY_TOKEN_LIMIT: int = Field(default=20000)
+
+    # --- Message limits ---
+    MAX_MSG_CHARS: int = Field(default=300)
+    BRIEF_MAX_CHARS: int = Field(default=800)
+    BRIEF_MAX_IMAGES: int = Field(default=4)
 
     # --- Channel lists (comma separated) ---
     AGENT_ALLOWED_CHANNELS: Optional[str] = None
@@ -61,13 +65,15 @@ settings = Settings()
 # Backwards compatibility constants ---------------------------------------
 OPENAI_API_KEY = settings.OPENAI_API_KEY
 OPENAI_MODEL = settings.OPENAI_MODEL
-PRECHAT_MSG_CHAR_LIMIT = settings.PRECHAT_MSG_CHAR_LIMIT
+MAX_MSG_CHARS = settings.MAX_MSG_CHARS
+PRECHAT_MSG_CHAR_LIMIT = settings.MAX_MSG_CHARS  # legacy name
 
 __all__ = [
     "Settings",
     "settings",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
+    "MAX_MSG_CHARS",
     "PRECHAT_MSG_CHAR_LIMIT",
 ]
 

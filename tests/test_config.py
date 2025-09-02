@@ -39,3 +39,13 @@ def test_ticket_ids(monkeypatch):
     assert cfg.CATEGORY_TICKETS == 456
     assert cfg.TICKET_COOLDOWN_SECONDS == 20
 
+
+def test_msg_limits(monkeypatch):
+    monkeypatch.delenv("MAX_MSG_CHARS", raising=False)
+    monkeypatch.delenv("BRIEF_MAX_CHARS", raising=False)
+    monkeypatch.delenv("BRIEF_MAX_IMAGES", raising=False)
+    cfg = Settings()
+    assert cfg.MAX_MSG_CHARS == 300
+    assert cfg.BRIEF_MAX_CHARS == 800
+    assert cfg.BRIEF_MAX_IMAGES == 4
+
