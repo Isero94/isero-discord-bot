@@ -64,10 +64,18 @@ MAX_REPLY_CHARS_STRICT = 300
 MAX_REPLY_CHARS_LOOSE  = 800
 MAX_REPLY_CHARS_DISCORD = 1900
 
-TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID", 0) or 0
-TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID", 0) or 0
+_deprecated_keys_detected = False
+if os.getenv("TICKET_HUB_CHANNEL_ID") or os.getenv("CATEGORY_TICKETS"):
+    _deprecated_keys_detected = True
+
+TICKET_HUB_CHANNEL_ID = _env_int(
+    "CHANNEL_TICKET_HUB", _env_int("TICKET_HUB_CHANNEL_ID", 0)
+) or 0
+TICKETS_CATEGORY_ID = _env_int(
+    "TICKETS_CATEGORY_ID", _env_int("CATEGORY_TICKETS", 0)
+) or 0
 BOT_COMMANDS_CHANNEL_ID = _env_int("CHANNEL_BOT_COMMANDS", 0) or 0
-SUGGESTIONS_CHANNEL_ID  = _env_int("CHANNEL_SUGGESTIONS", 0) or 0
+SUGGESTIONS_CHANNEL_ID = _env_int("CHANNEL_SUGGESTIONS", 0) or 0
 
 PROFANITY_WORDS = [w.lower() for w in _csv_list(os.getenv("PROFANITY_WORDS", ""))]
 AGENT_MASK_PROFANITY_TO_MODEL = _env_bool("AGENT_MASK_PROFANITY_TO_MODEL", True)
@@ -114,16 +122,31 @@ def _ticket_owner_id(ch: discord.abc.GuildChannel | discord.Thread) -> Optional[
     m = re.search(r"owner:(\d+)", topic or "")
     return int(m.group(1)) if m else None
 
+_warned_missing_ticket_category = False
+
+
 def _is_ticket_context(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
+    global _warned_missing_ticket_category
     try:
         if TICKET_HUB_CHANNEL_ID and getattr(ch, "id", 0) == TICKET_HUB_CHANNEL_ID:
             return True
+        cat_id = None
+        cat = None
         if isinstance(ch, discord.Thread) and ch.parent:
             cat_id = getattr(ch.parent, "category_id", 0) or 0
+            cat = getattr(ch.parent, "category", None)
         else:
             cat_id = getattr(ch, "category_id", 0) or 0
-        if TICKETS_CATEGORY_ID and cat_id == TICKETS_CATEGORY_ID:
-            return True
+            cat = getattr(ch, "category", None)
+        if TICKETS_CATEGORY_ID:
+            if cat_id == TICKETS_CATEGORY_ID:
+                return True
+        else:
+            if cat and getattr(cat, "name", "").lower() == "tickets":
+                if not _warned_missing_ticket_category:
+                    log.warning("TICKETS_CATEGORY_ID not set; falling back to category name 'tickets'")
+                    _warned_missing_ticket_category = True
+                return True
     except Exception:
         pass
     return False
@@ -265,6 +288,13 @@ class AgentGate(commands.Cog):
         self._budget = Budget(day_key=time.strftime("%Y-%m-%d"))
         self._dedup: Dict[int, tuple[str, float]] = {}   # user_id -> (last_text, ts)
         self.db = None  # compatibility for watchers that expect ag.db
+        self.env_status = {
+            "bot_commands": BOT_COMMANDS_CHANNEL_ID or "unset",
+            "suggestions": SUGGESTIONS_CHANNEL_ID or "unset",
+            "tickets_category": TICKETS_CATEGORY_ID or "unset",
+            "wake_words_count": len(WAKE_WORDS),
+            "deprecated_keys_detected": _deprecated_keys_detected,
+        }
 
     def _reset_budget_if_new_day(self):
         today = time.strftime("%Y-%m-%d")
