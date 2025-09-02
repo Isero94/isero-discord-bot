@@ -136,7 +136,7 @@ _warned_missing_ticket_category = False
 def _is_ticket_context(ch: discord.abc.GuildChannel | discord.Thread) -> bool:
     global _warned_missing_ticket_category
     try:
-        if TICKET_HUB_CHANNEL_ID and ch.id == TICKET_HUB_CHANNEL_ID:
+        if TICKET_HUB_CHANNEL_ID and getattr(ch, "id", 0) == TICKET_HUB_CHANNEL_ID:
             return True
         cat_id = None
         cat = None
@@ -416,7 +416,6 @@ class AgentGate(commands.Cog):
             and not (ticket_owner and message.author.id == ticket_owner)
         ):
             return
-
         if not self._dedup_ok(message.author.id, raw):
             return
 
@@ -445,10 +444,7 @@ class AgentGate(commands.Cog):
                 await self._safe_send_reply(message, part)
             return
 
-        if not (ticket_owner and message.author.id == ticket_owner):
-            if message.author.id != OWNER_ID and not self._cooldown_ok(message.author.id):
-                return
-
+        # ping-pong
         low = raw.lower()
 
         where_q = re.search(
@@ -481,7 +477,6 @@ class AgentGate(commands.Cog):
         mention = self.bot.user and self.bot.user.mentioned_in(message)
         bot_mention = f"<@{self.bot.user.id}>" if self.bot.user else None
         user_prompt = WAKE.strip(raw, bot_mention=bot_mention) or raw
-
         prompt_for_model = _mask_profane(user_prompt) if AGENT_MASK_PROFANITY_TO_MODEL else user_prompt
 
         est = approx_token_count(prompt_for_model) + 180
@@ -517,7 +512,7 @@ class AgentGate(commands.Cog):
             {"role": "user", "content": prompt_for_model},
         ]
 
-        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and mention) else OPENAI_MODEL
+        model = OPENAI_MODEL_HEAVY if (message.author.id == OWNER_ID and self.bot.user and self.bot.user.mentioned_in(message)) else OPENAI_MODEL
 
         try:
             reply = await call_openai_chat(messages, model=model)
