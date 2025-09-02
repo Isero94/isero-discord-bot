@@ -5,9 +5,12 @@ import asyncio
 import json
 import os
 import re
+import unicodedata
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Pattern
+
+import yaml
 
 import discord
 from discord.ext import commands
@@ -18,10 +21,23 @@ STORAGE = Path("storage")
 STORAGE.mkdir(exist_ok=True, parents=True)
 SCORES_FILE = STORAGE / "profanity_scores.json"
 
+# YAML alap szókészlet
+PROF_YAML = Path("config/profanity.yml")
 DEFAULT_WORDS = [
-    # bővítsd kedvedre az ENV-ben (PROFANITY_WORDS)
-    "kurva", "fasz", "faszom", "geci", "picsa", "szar",
-    "fuck", "shit", "bitch", "ass",
+    "kurva",
+    "geci",
+    "fasz",
+    "picsa",
+    "buzi",
+    "köcsög",
+    "szar",
+    "anyád",
+    "fuck",
+    "shit",
+    "bitch",
+    "dick",
+    "asshole",
+    "cunt",
 ]
 
 def load_scores() -> Dict[str, int]:
@@ -44,32 +60,42 @@ def get_env_int(key: str, default: int) -> int:
     except Exception:
         return default
 
-LEET = {
-    "a": "aá@4",
-    "e": "eé3",
-    "i": "ií1l!",
-    "o": "oó0",
-    "u": "uú",
-    "s": "s$5",
-    "c": "c"
+CHAR_ALTS = {
+    "a": ["a", "á", "4", "@"],
+    "e": ["e", "é", "3"],
+    "i": ["i", "í", "1", "!"],
+    "o": ["o", "ó", "ö", "ő", "0"],
+    "u": ["u", "ú", "ü", "ű"],
+    "c": ["c", "k", "ch"],
+    "g": ["g", "9", "q"],
+    "s": ["s", "$", "5"],
+    "r": ["r", "4"],
 }
 
 
-def _word_to_pattern(w: str) -> str:
-    parts = []
-    for ch in w:
-        chars = LEET.get(ch.lower(), ch.lower())
-        parts.append(f"[{re.escape(chars)}]+\W*")
-    return "".join(parts).rstrip("\\W*")
+def _strip_diacritics(text: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in nfkd if unicodedata.category(ch) != "Mn")
 
 
-def build_word_pattern(words: List[str]) -> re.Pattern:
-    """Create a tolerant regex pattern from a list of banned words."""
+def _word_to_pattern(word: str) -> str:
+    word = _strip_diacritics(word.lower())
+    parts: List[str] = []
+    for ch in word:
+        alts = CHAR_ALTS.get(ch, [ch])
+        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")"
+        parts.append(group)
+    joiner = r"[\W_]{0,2}?"
+    return joiner.join(parts)
+
+
+def build_tolerant_pattern(words: List[str]) -> Pattern:
+    """Build regex pattern tolerant to leetspeak, spacing and diacritics."""
     patterns = [_word_to_pattern(w.strip()) for w in words if w.strip()]
     if not patterns:
         patterns = [_word_to_pattern(w) for w in DEFAULT_WORDS]
     core = "|".join(patterns)
-    return re.compile(rf"(?i)\b(?:{core})\b", re.UNICODE)
+    return re.compile(rf"(?i)(?<!\w)(?:{core})(?!\w)")
 
 def censor_token(token: str) -> str:
     if len(token) <= 2:
@@ -98,8 +124,17 @@ class ProfanityGuard(commands.Cog):
         self.bot = bot
         self.scores: Dict[str, int] = load_scores()
         words_env = os.getenv("PROFANITY_WORDS", "")
-        words = DEFAULT_WORDS if not words_env.strip() else [w.strip() for w in words_env.split(",")]
-        self.word_pat = build_word_pattern(words)
+        if words_env.strip():
+            words = [w.strip() for w in words_env.split(",")]
+        elif PROF_YAML.exists():
+            try:
+                data = yaml.safe_load(PROF_YAML.read_text(encoding="utf-8")) or {}
+                words = data.get("words", DEFAULT_WORDS)
+            except Exception:
+                words = DEFAULT_WORDS
+        else:
+            words = DEFAULT_WORDS
+        self.word_pat = build_tolerant_pattern(words)
 
         self.free_per_msg = get_env_int("PROFANITY_FREE_WORDS_PER_MSG", 2)
         self.lvl1 = get_env_int("PROFANITY_LVL1_THRESHOLD", 3)
