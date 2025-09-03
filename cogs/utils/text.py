@@ -1,7 +1,13 @@
 # cogs/utils/text.py
 from __future__ import annotations
 import re
-from typing import List, Optional
+import os
+from datetime import timedelta
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import yaml
+import discord
 
 from bot.config import settings
 
@@ -50,3 +56,50 @@ def chunk_message(text: str, limit: Optional[int] = None) -> List[str]:
         allowed = limit - len(prefix)
         out.append(prefix + chunk[:allowed])
     return out
+
+
+# region ISERO PATCH profanity_helpers
+_PROF_SCORES: Dict[int, int] = {}
+
+
+def load_profanity_words() -> List[str]:
+    path = Path("config/profanity.yml")
+    if path.exists():
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                data = data.get("words", [])
+            if isinstance(data, list):
+                return [str(w).strip() for w in data if str(w).strip()]
+        except Exception:
+            pass
+    env = os.getenv("PROFANITY_WORDS", "")
+    return [w.strip() for w in env.split(",") if w.strip()]
+
+
+async def send_audit(bot, audit_channel_id: int, message: discord.Message, *, reason: str, original: str, redacted: str) -> None:
+    ch = bot.get_channel(audit_channel_id)
+    if ch:
+        try:
+            await ch.send(f"[{reason}] {original}\n{message.jump_url}")
+        except Exception:
+            pass
+
+
+async def safe_echo(bot, channel: discord.abc.Messageable, content: str, *, mimic_webhook: bool = True, author: Optional[discord.abc.User] = None) -> None:
+    await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+
+
+async def add_profanity_points(bot, user_id: int, points: int) -> int:
+    _PROF_SCORES[user_id] = _PROF_SCORES.get(user_id, 0) + int(points)
+    return _PROF_SCORES[user_id]
+
+
+async def apply_timeout(bot, member: discord.Member, minutes: int, *, reason: str = "") -> None:
+    if minutes <= 0:
+        return
+    try:
+        await member.timeout(timedelta(minutes=minutes), reason=reason)
+    except Exception:
+        pass
+# endregion ISERO PATCH profanity_helpers

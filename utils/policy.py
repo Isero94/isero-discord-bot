@@ -123,6 +123,12 @@ def feature_on(name: str) -> bool:
 
 
 def is_nsfw(ch: discord.abc.GuildChannel) -> bool:
+    if callable(getattr(ch, "is_nsfw", None)):
+        try:
+            if ch.is_nsfw():
+                return True
+        except Exception:
+            pass
     if getattr(ch, "nsfw", False):
         return True
     if getattr(ch, "category", None) and ch.category.id == settings.CATEGORY_NSFW:
@@ -131,3 +137,22 @@ def is_nsfw(ch: discord.abc.GuildChannel) -> bool:
         return True
     return False
 # endregion ISERO PATCH feature_helpers
+
+# region ISERO PATCH profanity_timeouts
+def profanity_thresholds():
+    lvl1 = getint("PROFANITY_LVL1_THRESHOLD", default=5)
+    lvl2 = getint("PROFANITY_LVL2_THRESHOLD", default=8)
+    lvl3 = getint("PROFANITY_LVL3_THRESHOLD", default=11)
+    return lvl1, lvl2, lvl3
+
+
+def profanity_free_per_message():
+    return getint("PROFANITY_FREE_WORDS_PER_MSG", default=2)
+
+
+def profanity_timeouts_minutes():
+    t1 = getint("PROFANITY_TIMEOUT_MIN_LVL1", default=40)
+    t2 = getint("PROFANITY_TIMEOUT_MIN_LVL2", default=480)  # 8 óra
+    t3 = getint("PROFANITY_TIMEOUT_MIN_LVL3", default=0)    # 0 = feloldásig
+    return t1, t2, t3
+# endregion ISERO PATCH profanity_timeouts
