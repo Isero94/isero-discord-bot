@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import List
+import discord
 
 MAX_TURNS = 10
 
@@ -64,3 +65,22 @@ class MebinuSession:
         for q, a in zip(QUESTIONS, self.answers):
             parts.append(f"{q} {a}")
         return "\n".join(parts)[:800]
+
+
+# region ISERO PATCH MEBINU_DIALOG_V1
+async def start_flow(cog, interaction) -> bool:
+    """Start guided Mebinu flow; return True if started."""
+    ch = interaction.channel
+    session = MebinuSession()
+    async for m in ch.history(limit=1, before=interaction.created_at):
+        if m.author.id == interaction.user.id:
+            session.prefill(m.content)
+            break
+    cog.mebinu_sessions[ch.id] = session
+    q = session.next_question()
+    await interaction.response.send_message(
+        f"{interaction.user.mention} {q} [{session.step+1}/{len(QUESTIONS)}]",
+        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+    )
+    return True
+# endregion ISERO PATCH MEBINU_DIALOG_V1

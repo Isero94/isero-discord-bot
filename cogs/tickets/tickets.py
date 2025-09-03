@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
-from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
 TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
@@ -160,6 +160,34 @@ class OrderModal(discord.ui.Modal, title="Rendelés részletei (max 800 karakter
 
     async def on_submit(self, interaction: discord.Interaction):
         await self._cb(interaction, str(self.desc.value))
+
+# region ISERO PATCH MEBINU_DIALOG_V1
+class SummaryView(discord.ui.View):
+    def __init__(self, cog: "TicketsCog", channel: discord.TextChannel, owner_id: int, summary: str):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.channel = channel
+        self.owner_id = owner_id
+        self.summary = summary
+
+    @discord.ui.button(label="Create brief from this", style=discord.ButtonStyle.primary, custom_id="mebinu:summary")
+    async def submit(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.defer()
+            return
+
+        async def _submit_cb(ia: discord.Interaction, desc: str):
+            self.cog.pending[self.channel.id] = {"owner_id": self.owner_id, "desc": desc, "left": MAX_ATTACH}
+            await ia.response.send_message(
+                f"✅ Leírás rögzítve. Most feltölthetsz **max {MAX_ATTACH}** képet ebbe a csatornába.\nHa kész vagy, írd be: **kész**.",
+                ephemeral=True,
+            )
+
+        modal = OrderModal(_submit_cb)
+        modal.desc.default = self.summary[:800]
+        await interaction.response.send_modal(modal)
+        self.stop()
+# endregion ISERO PATCH MEBINU_DIALOG_V1
 
 # ------- The Cog -------
 
@@ -329,22 +357,17 @@ class TicketsCog(commands.Cog):
     async def start_isero_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
-        if settings.FEATURES_MEBINU_DIALOG_V1 and k.startswith("mebinu"):
-            session = MebinuSession()
-            # region ISERO PATCH MEBINU
-            # Guard: régi sablon ág letiltása + előtöltés korábbi üzenetből
-            async for m in ch.history(limit=1, before=i.created_at):
-                if m.author.id == i.user.id:
-                    session.prefill(m.content)
-                    break
-            self.mebinu_sessions[ch.id] = session
-            q = session.next_question()
+        if k.startswith("mebinu"):
+            # region ISERO PATCH MEBINU_DIALOG_V1
+            if settings.FEATURES_MEBINU_DIALOG_V1 and await start_flow(self, i):
+                return
+            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
             await i.response.send_message(
-                f"{i.user.mention} {q} [{session.step+1}/{len(QUESTIONS)}]",
+                f"{i.user.mention} {q}",
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
-            # endregion ISERO PATCH MEBINU
             return
+            # endregion ISERO PATCH MEBINU_DIALOG_V1
 
         if k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
@@ -428,7 +451,12 @@ class TicketsCog(commands.Cog):
                 # endregion ISERO PATCH MEBINU
             else:
                 summary = session.summary()
-                await ch.send(f"Összegzés:\n{summary}")
+                owner_id = owner_from_topic(ch.topic) or message.author.id
+                view = SummaryView(self, ch, owner_id, summary)
+                await ch.send(
+                    f"{message.author.mention} Összegzem a válaszaidat – kattints a gombra ha kész vagy.",
+                    view=view,
+                )
                 self.mebinu_sessions.pop(ch.id, None)
             return
 

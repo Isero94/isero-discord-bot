@@ -85,12 +85,12 @@ def _word_to_pattern(word: str) -> str:
     for ch in word:
         alts = CHAR_ALTS.get(ch, [ch])
         # region ISERO PATCH PROFANITY_V2
-        # Bővítés: karakternyújtás támogatása (pl. "kuuurva")
-        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")+"
+        # Bővítés: karakternyújtás támogatása (pl. "kuuurva") +? kvantorral
+        group = "(?:" + "|".join(re.escape(a) for a in alts) + ")+?"
         parts.append(group)
     # region ISERO PATCH PROFANITY_V2
-    # Bővítés: c|ch alternáció már CHAR_ALTS-ban, de separator szélesítése + \n kezelés
-    joiner = r"(?:[\s_.,\-\d]{0,3})"
+    # Bővítés: c|ch alternáció már CHAR_ALTS-ban, separator szélesítése + DOTALL
+    joiner = r"(?:[\s\W_]*?)"
     # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 
@@ -101,7 +101,11 @@ def build_tolerant_pattern(words: List[str]) -> Pattern:
     if not patterns:
         patterns = [_word_to_pattern(w) for w in DEFAULT_WORDS]
     core = "|".join(patterns)
-    return re.compile(rf"(?i)(?<!\w)(?:{core})(?!\w)", re.DOTALL)
+    # region ISERO PATCH PROFANITY_V2
+    # Szóhatár-óvatosítás + DOTALL + IGNORECASE
+    boundary = rf"(?<![A-Za-zÁÉÍÓÖŐÚÜŰ0-9])(?:{core})(?![A-Za-zÁÉÍÓÖŐÚÜŰ0-9])"
+    return re.compile(boundary, re.IGNORECASE | re.DOTALL)
+    # endregion ISERO PATCH PROFANITY_V2
 
 def censor_token(token: str) -> str:
     if len(token) <= 2:

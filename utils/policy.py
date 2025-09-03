@@ -92,6 +92,10 @@ class ResponderPolicy:
         ticket_type = getattr(ctx, "ticket_type", None)
         category_id = getattr(ctx, "category_id", None)
         if is_ticket and ticket_type in {"mebinu", "commission", "nsfw", "help"}:
+            # region ISERO PATCH FEATURE_FLAGS_ENFORCE
+            if ticket_type == "mebinu" and not settings.FEATURES_MEBINU_DIALOG_V1:
+                return DecideResult(True, "short", "ticket_legacy", limit)
+            # endregion ISERO PATCH FEATURE_FLAGS_ENFORCE
             if ticket_type == "nsfw" and category_id != settings.CATEGORY_NSFW:
                 return DecideResult(True, "redirect", "nsfw_redirect", limit)
             return DecideResult(True, "guided", "ticket_guided", limit)
