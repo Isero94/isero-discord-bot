@@ -43,6 +43,14 @@ class ProfanityGuard(commands.Cog):
     """Csillagozás + küszöbözött némítás + logolás."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # region ISERO PATCH guard_passthrough_when_v2
+        from utils import policy as _policy
+        if _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2"):
+            # Ne regisztráljunk event handlereket v2 mellett – a watcher intézi.
+            self.disabled_by_feature = True
+        else:
+            self.disabled_by_feature = False
+        # endregion ISERO PATCH guard_passthrough_when_v2
         # user_id -> rolling excess counter (egyszerű, memóriás)
         self._excess = {}
 
@@ -50,6 +58,10 @@ class ProfanityGuard(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not RE_WORDS:
             return
+        # region ISERO PATCH guard_passthrough_when_v2
+        if getattr(self, "disabled_by_feature", False):
+            return
+        # endregion ISERO PATCH guard_passthrough_when_v2
         if not message.guild or message.author.bot:
             return
 
