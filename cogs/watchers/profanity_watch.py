@@ -90,7 +90,7 @@ def _word_to_pattern(word: str) -> str:
         parts.append(group)
     # region ISERO PATCH PROFANITY_V2
     # Bővítés: c|ch alternáció már CHAR_ALTS-ban, separator szélesítése + DOTALL
-    joiner = r"(?:[\s\W_]{0,3})"
+    joiner = r"(?:[\s\W_]{0,2})"
     # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 

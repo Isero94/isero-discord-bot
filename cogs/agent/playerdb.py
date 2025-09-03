@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 from typing import Optional, Tuple
 
+# region ISERO PATCH ticket_session imports
+from dataclasses import dataclass, field
+import datetime
+# endregion ISERO PATCH ticket_session imports
+
 import asyncpg
 
 log = logging.getLogger("isero.playerdb")
@@ -118,3 +123,32 @@ class PlayerDB:
                 "SELECT allow_admin FROM players WHERE user_id=$1", user_id
             )
         return bool(v)
+
+# region ISERO PATCH ticket_session
+
+@dataclass
+class TicketSession:
+    channel_id: int
+    owner_id: int
+    type: str
+    stage: int = 1
+    answers: dict[str, str] = field(default_factory=dict)
+    created_at: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
+    last_turn_at: datetime.datetime = field(default_factory=datetime.datetime.utcnow)
+
+_ticket_sessions: dict[int, TicketSession] = {}
+
+
+def get_ticket_session(channel_id: int) -> TicketSession | None:
+    return _ticket_sessions.get(channel_id)
+
+
+def upsert_ticket_session(session: TicketSession) -> None:
+    session.last_turn_at = datetime.datetime.utcnow()
+    _ticket_sessions[session.channel_id] = session
+
+
+def clear_ticket_session(channel_id: int) -> None:
+    _ticket_sessions.pop(channel_id, None)
+
+# endregion ISERO PATCH ticket_session

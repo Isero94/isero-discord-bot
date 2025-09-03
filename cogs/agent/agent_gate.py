@@ -125,6 +125,12 @@ def _mask_profane(text: str) -> str:
         t = re.sub(rf"(?i)(^|\W){re.escape(w)}(\W|$)", r"\1****\2", t)
     return t
 
+# region ISERO PATCH agent_helpers
+def agent_summarize_user_text(text: str, cap: int = MAX_REPLY_CHARS_STRICT) -> str:
+    text = text.strip()
+    return text if len(text) <= cap else text[: cap - 1].rstrip() + "…"
+# endregion ISERO PATCH agent_helpers
+
 def _ticket_owner_id(ch: discord.abc.GuildChannel | discord.Thread) -> Optional[int]:
     topic = None
     if isinstance(ch, discord.TextChannel):
@@ -473,6 +479,19 @@ class AgentGate(commands.Cog):
                 if BOT_COMMANDS_CHANNEL_ID:
                     dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":
