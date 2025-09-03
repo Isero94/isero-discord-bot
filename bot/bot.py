@@ -5,6 +5,8 @@ import logging
 import discord
 from discord.ext import commands
 
+from bot.config import settings
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
 
@@ -17,10 +19,10 @@ intents.reactions = True
 
 # ---- Env
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 
 EXTENSIONS = [
     "cogs.utils.logsetup",
+    "cogs.utils.health",
     "cogs.agent.agent_gate",
     "cogs.tickets.tickets",
     "cogs.ranks.progress",
@@ -42,15 +44,17 @@ class Bot(commands.Bot):
                 log.info(f"Loaded cog: {ext}")
             except Exception:
                 log.exception(f"Failed to load {ext}")
-
-        # App parancsok gyors szinkron
+        # App parancsok csak guild-scope-on
         try:
-            if GUILD_ID:
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                log.info(f"App commands synced to guild {GUILD_ID}")
-            else:
-                await self.tree.sync()
-                log.info("App commands synced (global)")
+            guild_obj = discord.Object(id=settings.GUILD_ID)
+            # töröljük a globál parancsokat
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+            # sync guildre
+            await self.tree.sync(guild=guild_obj)
+            names = [c.name for c in await self.tree.fetch_commands(guild=guild_obj)]
+            log.info("Registered app commands (guild %s): %s", guild_obj.id, names)
+            log.info("Registered app commands count: %d", len(names))
         except Exception:
             log.exception("Command sync failed")
 
