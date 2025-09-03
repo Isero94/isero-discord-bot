@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from typing import List, Tuple
+import os
 
 import discord
 from discord.ext import commands
 
 from utils import policy, throttling, text as textutil, logsetup
+from cogs.utils import context as ctx
 
 # region ISERO PATCH tolerant_import
 try:
@@ -20,7 +22,8 @@ log = logsetup.get_logger(__name__)
 
 # region ISERO PATCH sep_and_mask
 # Megengedett elválasztók a betűk között: szóköz, NBSP, újsor, írásjelek, számjegy, aláhúzás – max 3 hossz
-SEP = r"(?:[\s\N{NO-BREAK SPACE}\W\d_]{0,3})"
+# ISERO PATCH: megengedő szeparátor (space, NBSP, nem-betű, szám), max 3
+SEP = r"[\s\N{NO-BREAK SPACE}\W\d_]{0,3}" if _HAS_REGEX else r"[\s\W\d_]{0,3}"
 
 # Word-boundary közelítés: regex esetén \p{L}-t használunk, stdlib re esetén [^\W\d_] a „betű” közelítés.
 _BOUND_L = r"(?<!\p{L})" if _HAS_REGEX else r"(?<![^\W\d_])"
@@ -45,13 +48,20 @@ def soft_censor_text(text: str, pat: re.Pattern) -> Tuple[str, int]:
 class ProfanityWatcher(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.echo_ttl = policy.getint("PROFANITY_ECHO_TTL_S", default=30)
-        self.free_per_msg = policy.profanity_free_per_message()
-        self.lvl1, self.lvl2, self.lvl3 = policy.profanity_thresholds()
-        self.tout1, self.tout2, self.tout3 = policy.profanity_timeouts_minutes()
+        self.echo_ttl = policy.getint("PROFANITY_ECHO_TTL_S", 30)
+        self.free_per_msg = policy.getint("PROFANITY_FREE_WORDS_PER_MSG", 2)
+        self.lvl1 = policy.getint("PROFANITY_LVL1_THRESHOLD", 5)
+        self.lvl2 = policy.getint("PROFANITY_LVL2_THRESHOLD", 8)
+        self.lvl3 = policy.getint("PROFANITY_LVL3_THRESHOLD", 10)
+        self.tout1 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL1", 40)
+        self.tout2 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL2", 480)
+        self.tout3 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL3", 0)
         self.per_user_throttle = throttling.PerUserChannelTTL(self.echo_ttl)
         self.audit_channel_id = policy.getint("CHANNEL_MOD_LOGS", default=0)
         self.words_cfg = textutil.load_profanity_words()
+        self.exempt_ids = {
+            *{int(x) for x in os.getenv("PROFANITY_EXEMPT_USER_IDS", "").split(",") if x.strip()},
+        }
         self._compiled: List[Tuple[str, re.Pattern]] = []
         self._compile_patterns()
 
@@ -128,30 +138,29 @@ class ProfanityWatcher(commands.Cog):
         if is_nsfw:
             return
 
+        ctx.mark(message, moderated_hidden=True)
         try:
             await message.delete()
         except Exception:
             log.debug("delete failed", exc_info=True)
         try:
             if self.per_user_throttle.allow(message.author.id, message.channel.id):
-                await textutil.safe_echo(self.bot, message.channel, redacted, mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True), author=message.author)
+                await textutil.echo_masked(self.bot, message, redacted, ttl_s=self.echo_ttl)
         except Exception:
             log.exception("echo failed")
 
         bad_count = len(matches)
-        free = max(0, self.free_per_msg)
-        add_points = max(0, bad_count - free)
-        if add_points > 0:
-            total = await textutil.add_profanity_points(self.bot, message.author.id, add_points)
+        over = max(0, bad_count - self.free_per_msg)
+        penalize = message.author.id not in self.exempt_ids
+        if penalize and over > 0:
+            key = f"profanity:{message.guild.id}:{message.author.id}"
+            total = throttling.add_points(key, over, ttl=policy.getint("RECHECK_WINDOW_SECONDS", 180))
             if total >= self.lvl3:
-                minutes = self.tout3
-                await textutil.apply_timeout(self.bot, message.author, minutes, reason=f"Profanity L3 (total={total})")
+                await textutil.timeout_member(message, self.tout3)
             elif total >= self.lvl2:
-                minutes = self.tout2
-                await textutil.apply_timeout(self.bot, message.author, minutes, reason=f"Profanity L2 (total={total})")
+                await textutil.timeout_member(message, self.tout2)
             elif total >= self.lvl1:
-                minutes = self.tout1
-                await textutil.apply_timeout(self.bot, message.author, minutes, reason=f"Profanity L1 (total={total})")
+                await textutil.timeout_member(message, policy.getint("PROFANITY_TIMEOUT_MIN_LVL2", 40))
         return
 
 

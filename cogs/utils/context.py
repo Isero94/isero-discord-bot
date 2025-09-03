@@ -2,12 +2,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+from weakref import WeakKeyDictionary
 
 import os
 import discord
 
 from bot.config import settings
 from cogs.utils.wake import WakeMatcher
+
+# ISERO PATCH: lightweight cross-cog message flagging
+_flags: "WeakKeyDictionary[object, Dict[str, Any]]" = WeakKeyDictionary()
+_fallback_flags: Dict[int, Dict[str, Any]] = {}
+
+def mark(message, **kv):
+    try:
+        data = _flags.setdefault(message, {})
+    except TypeError:
+        data = _fallback_flags.setdefault(id(message), {})
+    data.update(kv)
+
+def has(message, key: str) -> bool:
+    try:
+        return bool(_flags.get(message, {}).get(key, False))
+    except TypeError:
+        return bool(_fallback_flags.get(id(message), {}).get(key, False))
 
 
 def _csv(val: str | None) -> list[str]:

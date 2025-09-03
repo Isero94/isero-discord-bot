@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 import yaml
 import discord
+from loguru import logger as log
 
 from bot.config import settings
 
@@ -90,6 +91,19 @@ async def safe_echo(bot, channel: discord.abc.Messageable, content: str, *, mimi
     await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
 
 
+async def echo_masked(bot, message: discord.Message, masked: str, ttl_s: int = 30):
+    """Delete original then echo masked text via optional webhook mimic."""
+    try:
+        if getattr(settings, "USE_WEBHOOK_MIMIC", True) and hasattr(message.channel, "create_webhook"):
+            wh = await message.channel.create_webhook(name=message.author.display_name)
+            await wh.send(masked, avatar_url=message.author.display_avatar.url, username=message.author.display_name)
+            await wh.delete()
+        else:
+            await message.channel.send(masked)
+    except Exception as e:
+        log.warning(f"echo_masked failed: {e}")
+
+
 async def add_profanity_points(bot, user_id: int, points: int) -> int:
     _PROF_SCORES[user_id] = _PROF_SCORES.get(user_id, 0) + int(points)
     return _PROF_SCORES[user_id]
@@ -102,4 +116,22 @@ async def apply_timeout(bot, member: discord.Member, minutes: int, *, reason: st
         await member.timeout(timedelta(minutes=minutes), reason=reason)
     except Exception:
         pass
+
+
+async def timeout_member(message: discord.Message, minutes: int):
+    """Timeout helper using message context; 0 => manual mute."""
+    try:
+        if minutes < 0:
+            return
+        member = message.guild.get_member(message.author.id)
+        if member is None:
+            return
+        if minutes == 0:
+            ch = message.guild.get_channel(settings.CHANNEL_MOD_LOGS)
+            if ch:
+                await ch.send(f"⚠️ Manual mute required for <@{member.id}> (profanity level 3).")
+        else:
+            await member.timeout(discord.utils.utcnow() + timedelta(minutes=minutes))
+    except Exception as e:
+        log.warning(f"timeout_member failed: {e}")
 # endregion ISERO PATCH profanity_helpers

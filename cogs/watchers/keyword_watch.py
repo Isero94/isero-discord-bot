@@ -1,6 +1,7 @@
 FEATURE_NAME = "keyword"
 
 from discord.ext import commands
+from cogs.utils import context as ctx
 
 async def setup(bot):
     # Register this cog with the bot
@@ -23,6 +24,8 @@ class KeywordWatch(commands.Cog):
     async def on_message(self, message):
         """Listens for messages and updates player state when keywords are detected."""
         # Ignore direct messages and messages from bots
+        if ctx.has(message, "moderated_hidden"):
+            return
         if message.guild is None or message.author.bot:
             return
         # Normalise message content to lowercase for matching
