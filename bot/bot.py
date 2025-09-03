@@ -29,7 +29,9 @@ EXTENSIONS = [
     "cogs.ranks.rolesync",
     "cogs.watchers.lang_watch",
     "cogs.watchers.keyword_watch",
-    "cogs.moderation.profanity_guard",  # <-- fontos
+    # region ISERO PATCH LOAD_PROFANITY_V2
+    "cogs.watchers.profanity_watch",
+    # endregion ISERO PATCH LOAD_PROFANITY_V2
 ]
 
 class Bot(commands.Bot):

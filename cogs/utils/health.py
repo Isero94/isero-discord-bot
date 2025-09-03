@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from cogs.utils.context import resolve
 from config import GUILD_ID
+from bot.config import settings
 
 if GUILD_ID:
     _guilds = app_commands.guilds(discord.Object(id=GUILD_ID))
@@ -29,6 +30,7 @@ class Health(commands.Cog):
     @_guilds
     async def diag(self, interaction: discord.Interaction) -> None:
         ag = self.bot.get_cog("AgentGate")
+        pg = self.bot.get_cog("ProfanityGuard")
         reason = "none"
         if ag and hasattr(ag, "channel_trigger_reason"):
             try:
@@ -36,6 +38,9 @@ class Health(commands.Cog):
             except Exception:
                 reason = "none"
         env = getattr(ag, "env_status", {}) if ag else {}
+        prof_module = pg.__module__ if pg else "none"
+        prof_source = getattr(pg, "source", "unknown")
+        free_words = getattr(pg, "free_per_msg", 0)
         ctx = await resolve(interaction)
         msg = (
             f"trigger_reason={reason}\n"
@@ -45,6 +50,8 @@ class Health(commands.Cog):
             f"is_nsfw={ctx.is_nsfw} owner={ctx.is_owner} staff={ctx.is_staff} "
             f"locale={ctx.locale} char_limit={ctx.char_limit} "
             f"brief_limits={ctx.brief_char_limit}/{ctx.brief_image_limit}\n"
+            f"prof_cog={prof_module} prof_src={prof_source} free_words={free_words} "
+            f"features profanity_v2={settings.FEATURES_PROFANITY_V2} mebinu_dialog_v1={settings.FEATURES_MEBINU_DIALOG_V1}\n"
             f"env bot_commands={env.get('bot_commands', 'unset')} "
             f"suggestions={env.get('suggestions', 'unset')} "
             f"tickets_category={env.get('tickets_category', 'unset')} "

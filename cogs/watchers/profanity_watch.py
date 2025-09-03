@@ -134,20 +134,25 @@ class ProfanityGuard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.scores: Dict[str, int] = load_scores()
+        path = Path(os.getenv("PROFANITY_CONFIG_PATH", "config/profanity.yml"))
         words_env = os.getenv("PROFANITY_WORDS", "")
-        if words_env.strip():
-            words = [w.strip() for w in words_env.split(",")]
-        elif PROF_YAML.exists():
+        if path.exists():
             try:
-                data = yaml.safe_load(PROF_YAML.read_text(encoding="utf-8")) or {}
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
                 words = data.get("words", DEFAULT_WORDS)
+                self.source = f"yaml:{path}"
             except Exception:
                 words = DEFAULT_WORDS
+                self.source = "default"
+        elif words_env.strip():
+            words = [w.strip() for w in words_env.split(",")]
+            self.source = "env"
         else:
             words = DEFAULT_WORDS
+            self.source = "default"
         self.word_pat = build_tolerant_pattern(words)
 
-        self.free_per_msg = get_env_int("PROFANITY_FREE_WORDS_PER_MSG", 2)
+        self.free_per_msg = get_env_int("PROFANITY_FREE_WORDS_PER_MSG", 0)
         self.lvl1 = get_env_int("PROFANITY_LVL1_THRESHOLD", 3)
         self.lvl2 = get_env_int("PROFANITY_LVL2_THRESHOLD", 5)
         self.lvl3 = get_env_int("PROFANITY_LVL3_THRESHOLD", 8)

@@ -286,7 +286,15 @@ class TicketsCog(commands.Cog):
         )
 
         # üdv + kétgombos start + close gomb
-        await ch.send(embed=self.welcome_embed(user, key), view=ChannelStartView(self))
+        view = ChannelStartView(self)
+        # region ISERO PATCH NSFW_SAFE_MODE
+        if key.startswith("nsfw"):
+            for item in list(view.children):
+                if getattr(item, "custom_id", "") == "ticket:isero":
+                    view.remove_item(item)
+                    break
+        # endregion ISERO PATCH NSFW_SAFE_MODE
+        await ch.send(embed=self.welcome_embed(user, key), view=view)
         await ch.send(view=CloseTicketView(self))
         return ch
 
@@ -359,7 +367,8 @@ class TicketsCog(commands.Cog):
         k = kind_from_topic(ch.topic)
         if k.startswith("mebinu"):
             # region ISERO PATCH MEBINU_DIALOG_V1
-            if settings.FEATURES_MEBINU_DIALOG_V1 and await start_flow(self, i):
+            if settings.FEATURES_MEBINU_DIALOG_V1:
+                await start_flow(self, i)
                 return
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
             await i.response.send_message(
