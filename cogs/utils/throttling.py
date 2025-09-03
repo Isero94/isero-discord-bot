@@ -27,3 +27,31 @@ class Deduper:
                 return False
         self._state[channel_id] = (h, now)
         return True
+
+
+_redir_state: Dict[str, float] = {}
+
+
+class PerUserChannelTTL:
+    def __init__(self, ttl: int = 30):
+        self.ttl = ttl
+        self._last: Dict[Tuple[int, int], float] = {}
+
+    def allow(self, user_id: int, channel_id: int) -> bool:
+        now = time.time()
+        key = (user_id, channel_id)
+        last = self._last.get(key, 0.0)
+        if now - last < self.ttl:
+            return False
+        self._last[key] = now
+        return True
+
+
+def should_redirect(key: str, ttl: int = 120) -> bool:
+    """Return True if redirect should be sent for ``key`` (else dedup)."""
+    now = time.time()
+    last = _redir_state.get(key, 0.0)
+    if now - last < ttl:
+        return False
+    _redir_state[key] = now
+    return True
