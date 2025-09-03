@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import time
 from typing import Dict
+
+import discord
+
 from bot.config import settings
 from cogs.utils.context import MessageContext
 
@@ -98,5 +102,26 @@ class ResponderPolicy:
             # endregion ISERO PATCH FEATURE_FLAGS_ENFORCE
             if ticket_type == "nsfw" and category_id != settings.CATEGORY_NSFW:
                 return DecideResult(True, "redirect", "nsfw_redirect", limit)
-            return DecideResult(True, "guided", "ticket_guided", limit)
+        return DecideResult(True, "guided", "ticket_guided", limit)
         return DecideResult(True, "short", "default", limit)
+
+
+# region ISERO PATCH feature_helpers
+def getbool(key: str, default: bool = False) -> bool:
+    return os.getenv(key, str(default)).lower() in {"1", "true", "yes", "on"}
+
+
+def feature_on(name: str) -> bool:
+    key = f"FEATURES_{name.upper()}"
+    return getbool(key, False)
+
+
+def is_nsfw(ch: discord.abc.GuildChannel) -> bool:
+    if getattr(ch, "nsfw", False):
+        return True
+    if getattr(ch, "category", None) and ch.category.id == settings.CATEGORY_NSFW:
+        return True
+    if ch.id in settings.nsfw_channels:
+        return True
+    return False
+# endregion ISERO PATCH feature_helpers

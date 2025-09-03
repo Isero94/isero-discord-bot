@@ -29,9 +29,6 @@ EXTENSIONS = [
     "cogs.ranks.rolesync",
     "cogs.watchers.lang_watch",
     "cogs.watchers.keyword_watch",
-    # region ISERO PATCH LOAD_PROFANITY_V2
-    "cogs.watchers.profanity_watch",
-    # endregion ISERO PATCH LOAD_PROFANITY_V2
 ]
 
 class Bot(commands.Bot):
@@ -46,6 +43,25 @@ class Bot(commands.Bot):
                 log.info(f"Loaded cog: {ext}")
             except Exception:
                 log.exception(f"Failed to load {ext}")
+        # region ISERO PATCH profanity_cog_switch
+        from utils import policy as _policy
+        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2")
+        legacy = "cogs.moderation.profanity_guard"
+        watcher = "cogs.watchers.profanity_watch"
+        try:
+            if want_v2:
+                if legacy in self.extensions:
+                    await self.unload_extension(legacy)
+                if watcher not in self.extensions:
+                    await self.load_extension(watcher)
+            else:
+                if watcher in self.extensions:
+                    await self.unload_extension(watcher)
+                if legacy not in self.extensions:
+                    await self.load_extension(legacy)
+        except Exception:
+            log.exception("Profanity cog switch failed")
+        # endregion ISERO PATCH profanity_cog_switch
         # App parancsok csak guild-scope-on
         try:
             guild_obj = discord.Object(id=settings.GUILD_ID)

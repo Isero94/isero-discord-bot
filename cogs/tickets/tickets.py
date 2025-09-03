@@ -288,7 +288,8 @@ class TicketsCog(commands.Cog):
         # üdv + kétgombos start + close gomb
         view = ChannelStartView(self)
         # region ISERO PATCH NSFW_SAFE_MODE
-        if key.startswith("nsfw"):
+        from utils import policy as _policy
+        if _policy.is_nsfw(ch):
             for item in list(view.children):
                 if getattr(item, "custom_id", "") == "ticket:isero":
                     view.remove_item(item)
@@ -365,9 +366,14 @@ class TicketsCog(commands.Cog):
     async def start_isero_flow(self, i: discord.Interaction):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
+        from utils import policy as _policy
         if k.startswith("mebinu"):
             # region ISERO PATCH MEBINU_DIALOG_V1
-            if settings.FEATURES_MEBINU_DIALOG_V1:
+            if (
+                _policy.getbool("FEATURES_MEBINU_DIALOG_V1", default=False)
+                or _policy.feature_on("mebinu_dialog_v1")
+                or getattr(settings, "FEATURES_MEBINU_DIALOG_V1", False)
+            ):
                 await start_flow(self, i)
                 return
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
@@ -382,7 +388,11 @@ class TicketsCog(commands.Cog):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
         elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
-        elif k.startswith("mebinu") and not settings.FEATURES_MEBINU_DIALOG_V1:
+        elif k.startswith("mebinu") and not (
+            _policy.getbool("FEATURES_MEBINU_DIALOG_V1", default=False)
+            or _policy.feature_on("mebinu_dialog_v1")
+            or getattr(settings, "FEATURES_MEBINU_DIALOG_V1", False)
+        ):
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."

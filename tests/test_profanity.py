@@ -1,4 +1,5 @@
 import types
+import pytest
 from cogs.watchers.profanity_watch import (
     ProfanityGuard,
     build_tolerant_pattern,
@@ -37,6 +38,23 @@ def test_false_positive():
     text = "legend"
     _, cnt = soft_censor_text(text, pat)
     assert cnt == 0
+
+
+@pytest.mark.parametrize(
+    "txt",
+    [
+        "geci",
+        "g3ci",
+        "g e c i",
+        "g\u00A0e\u00A0c\u00A0i",
+        "b a z d m e g",
+        "bazd\nmeg",
+    ],
+)
+def test_tolerant_variants_detected(txt):
+    pat = build_tolerant_pattern(["geci", "bazdmeg"])
+    _, cnt = soft_censor_text(txt, pat)
+    assert cnt == 1
 
 
 import asyncio

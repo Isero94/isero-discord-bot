@@ -32,6 +32,7 @@ DEFAULT_WORDS = [
     "köcsög",
     "szar",
     "anyád",
+    "bazdmeg",
     "fuck",
     "shit",
     "bitch",
@@ -91,7 +92,7 @@ def _word_to_pattern(word: str) -> str:
     # region ISERO PATCH PROFANITY_V2
     # Bővítés: c|ch alternáció már CHAR_ALTS-ban, separator szélesítése + DOTALL
     # Régi [\s\W_] nem engedte a számjegyeket; most bármely nem-betűt elfogadunk
-    joiner = r"(?:[^A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{0,2})"
+    joiner = r"(?:[^A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{0,3})"
     # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 
