@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import regex as re
 from typing import List, Tuple
 
 import discord
@@ -8,11 +7,24 @@ from discord.ext import commands
 
 from utils import policy, throttling, text as textutil, logsetup
 
+# region ISERO PATCH tolerant_import
+try:
+    import regex as re  # supports \p{L}, (?V1), etc.
+    _HAS_REGEX = True
+except Exception:  # fallback to stdlib re (less precise)
+    import re  # type: ignore
+    _HAS_REGEX = False
+# endregion ISERO PATCH tolerant_import
+
 log = logsetup.get_logger(__name__)
 
 # region ISERO PATCH sep_and_mask
 # Megengedett elválasztók a betűk között: szóköz, NBSP, újsor, írásjelek, számjegy, aláhúzás – max 3 hossz
 SEP = r"(?:[\s\N{NO-BREAK SPACE}\W\d_]{0,3})"
+
+# Word-boundary közelítés: regex esetén \p{L}-t használunk, stdlib re esetén [^\W\d_] a „betű” közelítés.
+_BOUND_L = r"(?<!\p{L})" if _HAS_REGEX else r"(?<![^\W\d_])"
+_BOUND_R = r"(?!\p{L})" if _HAS_REGEX else r"(?![^\W\d_])"
 
 def _mask_preserving_separators(s: str) -> str:
     """Csillagozza a betű/szám karaktereket, de meghagyja az elválasztókat."""
@@ -66,8 +78,8 @@ class ProfanityWatcher(commands.Cog):
             for ch in word:
                 parts.append(f"{var(ch)}+")
             core = SEP.join(parts)
-            pat = rf"(?V1)(?i)(?<!\p{{L}}){core}(?!\p{{L}})"
-            return re.compile(pat, flags=re.DOTALL)
+            pat = rf"{_BOUND_L}{core}{_BOUND_R}"
+            return re.compile(pat, flags=re.DOTALL | re.IGNORECASE)
 
         self._compiled.clear()
         for w in self.words_cfg:
@@ -172,5 +184,5 @@ def build_tolerant_pattern(words: List[str]) -> re.Pattern:
         parts = [f"{var(ch)}+" for ch in word]
         patterns.append(SEP.join(parts))
     core = "|".join(patterns) or r"$^"
-    boundary = rf"(?V1)(?i)(?<!\p{{L}})(?:{core})(?!\p{{L}})"
-    return re.compile(boundary, flags=re.DOTALL)
+    boundary = rf"{_BOUND_L}(?:{core}){_BOUND_R}"
+    return re.compile(boundary, flags=re.DOTALL | re.IGNORECASE)
