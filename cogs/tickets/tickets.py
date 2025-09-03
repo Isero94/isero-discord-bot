@@ -20,6 +20,7 @@ TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
 NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
+LEGACY_HINT_BLOCK     = "Please list product, quantity, style, deadline, budget and references."
 
 # ---- channel topic marker / helpers ----
 def owner_marker(user_id: int) -> str:
@@ -296,6 +297,11 @@ class TicketsCog(commands.Cog):
                     break
         # endregion ISERO PATCH NSFW_SAFE_MODE
         await ch.send(embed=self.welcome_embed(user, key), view=view)
+        # region ISERO PATCH MEBINU_hide_legacy_when_dialog_on
+        from utils import policy as _policy
+        if not (_policy.getbool("FEATURES_MEBINU_DIALOG_V1", default=False) or _policy.feature_on("mebinu_dialog_v1")):
+            await ch.send(LEGACY_HINT_BLOCK)
+        # endregion ISERO PATCH MEBINU_hide_legacy_when_dialog_on
         await ch.send(view=CloseTicketView(self))
         return ch
 

@@ -44,23 +44,24 @@ class Bot(commands.Bot):
             except Exception:
                 log.exception(f"Failed to load {ext}")
         # region ISERO PATCH profanity_cog_switch
+        # v2 flag esetén a watcher (echo + YAML + tolerant regex) töltődik be.
+        # különben marad a legacy guard.
         from utils import policy as _policy
         want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2")
         legacy = "cogs.moderation.profanity_guard"
         watcher = "cogs.watchers.profanity_watch"
-        try:
-            if want_v2:
-                if legacy in self.extensions:
-                    await self.unload_extension(legacy)
-                if watcher not in self.extensions:
-                    await self.load_extension(watcher)
-            else:
-                if watcher in self.extensions:
-                    await self.unload_extension(watcher)
-                if legacy not in self.extensions:
-                    await self.load_extension(legacy)
-        except Exception:
-            log.exception("Profanity cog switch failed")
+        if want_v2:
+            if legacy in self.extensions:
+                await self.unload_extension(legacy)
+            if watcher not in self.extensions:
+                await self.load_extension(watcher)
+                print("INFO:isero:Profanity Watcher v2 loaded")
+        else:
+            if watcher in self.extensions:
+                await self.unload_extension(watcher)
+            if legacy not in self.extensions:
+                await self.load_extension(legacy)
+                print("INFO:isero:Legacy Profanity Guard loaded")
         # endregion ISERO PATCH profanity_cog_switch
         # App parancsok csak guild-scope-on
         try:

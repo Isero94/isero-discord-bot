@@ -45,11 +45,7 @@ class ProfanityGuard(commands.Cog):
         self.bot = bot
         # region ISERO PATCH guard_passthrough_when_v2
         from utils import policy as _policy
-        if _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2"):
-            # Ne regisztráljunk event handlereket v2 mellett – a watcher intézi.
-            self.disabled_by_feature = True
-        else:
-            self.disabled_by_feature = False
+        self.disabled_by_feature = _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2")
         # endregion ISERO PATCH guard_passthrough_when_v2
         # user_id -> rolling excess counter (egyszerű, memóriás)
         self._excess = {}

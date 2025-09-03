@@ -110,6 +110,12 @@ class ResponderPolicy:
 def getbool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).lower() in {"1", "true", "yes", "on"}
 
+def getint(key: str, default: int = 0) -> int:
+    try:
+        return int(os.getenv(key, str(default)))
+    except Exception:
+        return default
+
 
 def feature_on(name: str) -> bool:
     key = f"FEATURES_{name.upper()}"

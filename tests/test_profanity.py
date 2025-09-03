@@ -47,12 +47,14 @@ def test_false_positive():
         "g3ci",
         "g e c i",
         "g\u00A0e\u00A0c\u00A0i",
-        "b a z d m e g",
+        "bazd meg",
         "bazd\nmeg",
+        "seggfej",
+        "segg fej",
     ],
 )
 def test_tolerant_variants_detected(txt):
-    pat = build_tolerant_pattern(["geci", "bazdmeg"])
+    pat = build_tolerant_pattern(["geci", "bazdmeg", "seggfej"])
     _, cnt = soft_censor_text(txt, pat)
     assert cnt == 1
 

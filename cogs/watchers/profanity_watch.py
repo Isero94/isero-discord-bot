@@ -33,6 +33,7 @@ DEFAULT_WORDS = [
     "szar",
     "anyád",
     "bazdmeg",
+    "seggfej",
     "fuck",
     "shit",
     "bitch",
@@ -74,6 +75,10 @@ CHAR_ALTS = {
     "t": ["t", "7"],
 }
 
+# region ISERO PATCH tolerant_sep
+SEP = r"[\s\N{NO-BREAK SPACE}\W\d_]{0,3}"
+# endregion ISERO PATCH tolerant_sep
+
 
 def _strip_diacritics(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text)
@@ -91,8 +96,7 @@ def _word_to_pattern(word: str) -> str:
         parts.append(group)
     # region ISERO PATCH PROFANITY_V2
     # Bővítés: c|ch alternáció már CHAR_ALTS-ban, separator szélesítése + DOTALL
-    # Régi [\s\W_] nem engedte a számjegyeket; most bármely nem-betűt elfogadunk
-    joiner = r"(?:[^A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű]{0,3})"
+    joiner = SEP
     # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 
@@ -251,9 +255,10 @@ class ProfanityGuard(commands.Cog):
             finally:
                 return
 
-        do_echo = True
-        key = f"echo:{message.guild.id}:{message.channel.id}:{message.author.id}"
-        do_echo = should_redirect(key, ttl=30)
+        from utils import policy as _policy
+        ttl = _policy.getint("PROFANITY_ECHO_TTL_S", 30)
+        key = f"profanity_echo:{message.channel.id}:{message.author.id}"
+        do_echo = should_redirect(key, ttl=ttl)
 
         if do_echo:
             try:
