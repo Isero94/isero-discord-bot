@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 import asyncio
@@ -10,23 +9,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ------- Helpers: env ints safely -------
-def _env_int(name: str) -> int | None:
-    val = os.getenv(name, "").strip()
-    if not val:
-        return None
-    try:
-        return int(val)
-    except ValueError:
-        return None
+from bot.config import settings
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow
 
-TICKET_HUB_CHANNEL_ID = _env_int("TICKET_HUB_CHANNEL_ID")
-TICKETS_CATEGORY_ID   = _env_int("TICKETS_CATEGORY_ID")
-ARCHIVE_CATEGORY_ID   = _env_int("ARCHIVE_CATEGORY_ID")
-STAFF_ROLE_ID         = _env_int("STAFF_ROLE_ID")  # optional
-TICKET_COOLDOWN_SEC   = _env_int("TICKET_COOLDOWN_SECONDS") or 20
+TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
+TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
+ARCHIVE_CATEGORY_ID   = settings.ARCHIVE_CATEGORY_ID
+STAFF_ROLE_ID         = settings.STAFF_ROLE_ID
+TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
-NSFW_ROLE_NAME        = os.getenv("NSFW_ROLE_NAME", "NSFW 18+")
+NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
 
 # ---- channel topic marker / helpers ----
@@ -169,6 +161,34 @@ class OrderModal(discord.ui.Modal, title="Rendelés részletei (max 800 karakter
     async def on_submit(self, interaction: discord.Interaction):
         await self._cb(interaction, str(self.desc.value))
 
+# region ISERO PATCH MEBINU_DIALOG_V1
+class SummaryView(discord.ui.View):
+    def __init__(self, cog: "TicketsCog", channel: discord.TextChannel, owner_id: int, summary: str):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.channel = channel
+        self.owner_id = owner_id
+        self.summary = summary
+
+    @discord.ui.button(label="Create brief from this", style=discord.ButtonStyle.primary, custom_id="mebinu:summary")
+    async def submit(self, interaction: discord.Interaction, _: discord.ui.Button):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.defer()
+            return
+
+        async def _submit_cb(ia: discord.Interaction, desc: str):
+            self.cog.pending[self.channel.id] = {"owner_id": self.owner_id, "desc": desc, "left": MAX_ATTACH}
+            await ia.response.send_message(
+                f"✅ Leírás rögzítve. Most feltölthetsz **max {MAX_ATTACH}** képet ebbe a csatornába.\nHa kész vagy, írd be: **kész**.",
+                ephemeral=True,
+            )
+
+        modal = OrderModal(_submit_cb)
+        modal.desc.default = self.summary[:800]
+        await interaction.response.send_modal(modal)
+        self.stop()
+# endregion ISERO PATCH MEBINU_DIALOG_V1
+
 # ------- The Cog -------
 
 class TicketsCog(commands.Cog):
@@ -176,6 +196,7 @@ class TicketsCog(commands.Cog):
         self.bot = bot
         self.last_open: dict[int, float] = {}   # cooldown map
         self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
+        self.mebinu_sessions: dict[int, MebinuSession] = {}
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
@@ -265,7 +286,15 @@ class TicketsCog(commands.Cog):
         )
 
         # üdv + kétgombos start + close gomb
-        await ch.send(embed=self.welcome_embed(user, key), view=ChannelStartView(self))
+        view = ChannelStartView(self)
+        # region ISERO PATCH NSFW_SAFE_MODE
+        if key.startswith("nsfw"):
+            for item in list(view.children):
+                if getattr(item, "custom_id", "") == "ticket:isero":
+                    view.remove_item(item)
+                    break
+        # endregion ISERO PATCH NSFW_SAFE_MODE
+        await ch.send(embed=self.welcome_embed(user, key), view=view)
         await ch.send(view=CloseTicketView(self))
         return ch
 
@@ -337,11 +366,24 @@ class TicketsCog(commands.Cog):
         ch = T.cast(discord.TextChannel, i.channel)
         k = kind_from_topic(ch.topic)
         if k.startswith("mebinu"):
+            # region ISERO PATCH MEBINU_DIALOG_V1
+            if settings.FEATURES_MEBINU_DIALOG_V1:
+                await start_flow(self, i)
+                return
             q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
-        elif k.startswith("commission"):
+            await i.response.send_message(
+                f"{i.user.mention} {q}",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
+            return
+            # endregion ISERO PATCH MEBINU_DIALOG_V1
+
+        if k.startswith("commission"):
             q = "Kezdjük az alapokkal: stílus, méret, határidő. Van referenciád?"
         elif k in ("nsfw", "nsfw 18+"):
             q = "Röviden írd le a témát és a tiltott dolgokat. (A szabályokat itt is betartjuk.)"
+        elif k.startswith("mebinu") and not settings.FEATURES_MEBINU_DIALOG_V1:
+            q = "Melyik alcsomag érdekel? (Logo/Branding, Asset pack, Social set, Egyéb) — írd le röviden a célt és a határidőt."
         else:
             q = "Mi a célod egy mondatban? Utána adok 2–3 opciót."
 
@@ -401,6 +443,31 @@ class TicketsCog(commands.Cog):
                     self.pending.pop(ch.id, None)
                     await ch.send("✅ Köszi! Megvan minden. Hamarosan jelentkezünk a részletekkel.")
                 return
+
+        # 1/b) MEBINU guided flow
+        if settings.FEATURES_MEBINU_DIALOG_V1 and isinstance(ch, discord.TextChannel) and ch.id in self.mebinu_sessions:
+            session = self.mebinu_sessions[ch.id]
+            owner_id = owner_from_topic(ch.topic)
+            if owner_id and message.author.id != owner_id:
+                return
+            session.record(message.content)
+            nxt = session.next_question()
+            if nxt:
+                # region ISERO PATCH MEBINU
+                await ch.send(
+                    f"{message.author.mention} {nxt} [{session.step+1}/{len(QUESTIONS)}]"
+                )
+                # endregion ISERO PATCH MEBINU
+            else:
+                summary = session.summary()
+                owner_id = owner_from_topic(ch.topic) or message.author.id
+                view = SummaryView(self, ch, owner_id, summary)
+                await ch.send(
+                    f"{message.author.mention} Összegzem a válaszaidat – kattints a gombra ha kész vagy.",
+                    view=view,
+                )
+                self.mebinu_sessions.pop(ch.id, None)
+            return
 
         # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()
