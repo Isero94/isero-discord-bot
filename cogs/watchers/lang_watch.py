@@ -3,6 +3,7 @@ import re
 import logging
 import discord
 from discord.ext import commands
+from cogs.utils import context as ctx
 
 log = logging.getLogger("isero.watch.lang")
 
@@ -17,35 +18,33 @@ class LangWatch(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if ctx.has(message, "moderated_hidden"):
+            return
         if message.author.bot or not message.guild:
             return
         if not message.content:
             return
 
         ag = self.bot.get_cog("AgentGate")
-        if not ag or not getattr(ag, "db", None):
+        db = getattr(ag, "db", None) if ag else None
+        if db is None:
             return
-        db = ag.db  # type: ignore
 
         text = message.content.strip()
-        # engagement: hossz + formázás
-        engagement = min(max(len(text) // 50, 0), 5)
-        if "\n" in text:
-            engagement += 1
-        # mood: +- kulcsszavak
         low = text.lower()
         pos = sum(w in low for w in POS_WORDS)
         neg = sum(w in low for w in NEG_WORDS)
-        mood = max(min(pos - neg, 5), -5)
-        # promo: link/discord meghívó
-        promo = 1 if ("http://" in low or "https://" in low or "discord.gg/" in low) else 0
-        total = max(0, engagement + max(mood,0) + promo)
-
+        mood = max(min(pos - neg, 5), -5) / 5  # -1..1
         try:
-            await db.upsert_user(message.author.id, f"{message.author.name}#{message.author.discriminator}")  # type: ignore
-            await db.add_score(message.author.id, engagement, mood, promo, total)
+            await db.log_signal(
+                message.author.id,
+                message.channel.id,
+                mood,
+                "other",
+                0,
+            )
         except Exception as e:
-            log.debug("score write failed: %s", e)
+            log.debug("signal write failed: %s", e)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(LangWatch(bot))
