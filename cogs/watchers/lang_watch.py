@@ -18,7 +18,7 @@ class LangWatch(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if ctx.has(message, "moderated_hidden"):
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
             return
         if message.author.bot or not message.guild:
             return

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from weakref import WeakKeyDictionary
 
 import os
 import discord
@@ -10,22 +9,37 @@ import discord
 from bot.config import settings
 from cogs.utils.wake import WakeMatcher
 
-# ISERO PATCH: lightweight cross-cog message flagging
-_flags: "WeakKeyDictionary[object, Dict[str, Any]]" = WeakKeyDictionary()
-_fallback_flags: Dict[int, Dict[str, Any]] = {}
+"""Utilities for resolving message context and lightweight flags."""
 
-def mark(message, **kv):
-    try:
-        data = _flags.setdefault(message, {})
-    except TypeError:
-        data = _fallback_flags.setdefault(id(message), {})
-    data.update(kv)
+# Lightweight cross-cog flags for a Discord message.
+# Idempotens, safe to call multiple times.
+FLAGS_ATTR = "_isero_flags"
 
-def has(message, key: str) -> bool:
-    try:
-        return bool(_flags.get(message, {}).get(key, False))
-    except TypeError:
-        return bool(_fallback_flags.get(id(message), {}).get(key, False))
+def _get_flags(msg):
+    flags = getattr(msg, FLAGS_ATTR, None)
+    if flags is None:
+        flags = set()
+        setattr(msg, FLAGS_ATTR, flags)
+    return flags
+
+def add_flag(msg, key: str):
+    _get_flags(msg).add(key)
+
+def has_flag(msg, key: str) -> bool:
+    return key in getattr(msg, FLAGS_ATTR, set())
+
+# Canonical flags used by moderation/watchers
+def mark_hidden(msg):
+    add_flag(msg, "hidden")
+
+def is_hidden(msg) -> bool:
+    return has_flag(msg, "hidden")
+
+def mark_moderated(msg):
+    add_flag(msg, "moderated")
+
+def is_moderated(msg) -> bool:
+    return has_flag(msg, "moderated")
 
 
 def _csv(val: str | None) -> list[str]:

@@ -23,8 +23,8 @@ class KeywordWatch(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         """Listens for messages and updates player state when keywords are detected."""
-        # Ignore direct messages and messages from bots
-        if ctx.has(message, "moderated_hidden"):
+        # Skip if moderation already consumed the message
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
             return
         if message.guild is None or message.author.bot:
             return

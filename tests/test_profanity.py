@@ -8,6 +8,8 @@ from cogs.watchers.profanity_watch import (
 from discord.ext import commands
 import discord
 
+from cogs.agent.agent_gate import AgentGate
+
 
 def score(text: str) -> int:
     pat = build_tolerant_pattern(["geci", "kurva"])
@@ -159,3 +161,46 @@ def test_echo_throttle():
     asyncio.run(guard.on_message(msg))
     asyncio.run(guard.on_message(msg))
     assert len(sent) == 1  # throttle: only first echo
+
+
+def test_agent_does_not_reply_when_moderated():
+    intents = discord.Intents.none()
+    bot = commands.Bot(command_prefix="!", intents=intents)
+    agent = AgentGate(bot)
+    profanity = ProfanityGuard(bot)
+
+    class Chan:
+        id = 1
+        sent: list[str] = []
+        async def send(self, msg, *a, **kw):
+            self.sent.append(msg)
+
+    class Guild:
+        id = 1
+
+    class Author:
+        id = 2
+        bot = False
+        display_name = "x"
+        mention = "@x"
+        display_avatar = types.SimpleNamespace(url="")
+
+    async def _del():
+        return None
+
+    msg = types.SimpleNamespace(
+        guild=Guild(),
+        author=Author(),
+        channel=Chan(),
+        content="bazd   meg",
+        attachments=[],
+        mentions=[],
+        role_mentions=[],
+        jump_url="u",
+        delete=_del,
+    )
+
+    asyncio.run(profanity.on_message(msg))
+    before = list(msg.channel.sent)
+    asyncio.run(agent.on_message(msg))
+    assert msg.channel.sent == before

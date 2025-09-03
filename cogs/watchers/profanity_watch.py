@@ -9,21 +9,21 @@ from discord.ext import commands
 from utils import policy, throttling, text as textutil, logsetup
 from cogs.utils import context as ctx
 
-# region ISERO PATCH tolerant_import
+# ISERO PATCH: tolerant matching + safe fallback to stdlib re
 try:
-    import regex as re  # supports \p{L}, (?V1), etc.
+    import regex as re  # better \p{L}, Unicode classes
     _HAS_REGEX = True
-except Exception:  # fallback to stdlib re (less precise)
-    import re  # type: ignore
+except Exception:
+    import re
     _HAS_REGEX = False
-# endregion ISERO PATCH tolerant_import
 
 log = logsetup.get_logger(__name__)
 
 # region ISERO PATCH sep_and_mask
 # Megengedett elválasztók a betűk között: szóköz, NBSP, újsor, írásjelek, számjegy, aláhúzás – max 3 hossz
-# ISERO PATCH: megengedő szeparátor (space, NBSP, nem-betű, szám), max 3
-SEP = r"[\s\N{NO-BREAK SPACE}\W\d_]{0,3}" if _HAS_REGEX else r"[\s\W\d_]{0,3}"
+# Toleráns elválasztó a karakterek között:
+# szóköz / NBSP / nem-betű / szám / aláhúzás – legfeljebb 3 egymás után
+SEP = r"[\s\N{NO-BREAK SPACE}\W\d_]{0,3}" if _HAS_REGEX else r"[^\w]{0,3}"
 
 # Word-boundary közelítés: regex esetén \p{L}-t használunk, stdlib re esetén [^\W\d_] a „betű” közelítés.
 _BOUND_L = r"(?<!\p{L})" if _HAS_REGEX else r"(?<![^\W\d_])"
@@ -109,6 +109,9 @@ class ProfanityWatcher(commands.Cog):
         content = message.content or ""
         if not content:
             return
+        # Already handled? Bail.
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
+            return
 
         is_nsfw = policy.is_nsfw(message.channel)
         matches: List[Tuple[str, Tuple[int, int]]] = []
@@ -130,7 +133,13 @@ class ProfanityWatcher(commands.Cog):
         if is_owner or is_bot_self:
             try:
                 if self.per_user_throttle.allow(message.author.id, message.channel.id):
-                    await textutil.safe_echo(self.bot, message.channel, redacted, mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True), author=message.author)
+                    await textutil.safe_echo(
+                        self.bot,
+                        message.channel,
+                        redacted,
+                        mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True),
+                        author=message.author,
+                    )
             except Exception:
                 log.exception("echo (owner/bot) failed")
             return
@@ -138,7 +147,8 @@ class ProfanityWatcher(commands.Cog):
         if is_nsfw:
             return
 
-        ctx.mark(message, moderated_hidden=True)
+        ctx.mark_moderated(message)
+        ctx.mark_hidden(message)
         try:
             await message.delete()
         except Exception:

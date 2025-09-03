@@ -11,6 +11,7 @@ from typing import Dict, Optional, List, Tuple
 import httpx
 import discord
 from discord.ext import commands
+from cogs.utils import context as ctxutil
 from bot.config import settings
 from cogs.agent.playerdb import PlayerDB
 
@@ -452,6 +453,10 @@ class AgentGate(commands.Cog):
         if not raw or _is_noise(raw):
             return
 
+        # ISERO PATCH: do not react to messages already moderated/hidden
+        if ctxutil.is_hidden(message) or ctxutil.is_moderated(message):
+            return
+
         if settings.OWNER_NL_ENABLED and raw.startswith(settings.OWNER_ACTIVATION_PREFIX):
             if message.author.id == (settings.OWNER_ID or 0):
                 cmd = raw[len(settings.OWNER_ACTIVATION_PREFIX):].strip()
@@ -479,6 +484,19 @@ class AgentGate(commands.Cog):
                 if BOT_COMMANDS_CHANNEL_ID:
                     dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":
