@@ -50,6 +50,7 @@ def test_announcements_redirect():
 
 
 def test_ticket_guided():
+    settings.FEATURES_MEBINU_DIALOG_V1 = True
     ctx = _ctx(is_ticket=True, ticket_type="mebinu")
     res = ResponderPolicy.decide(ctx)
     assert res.mode == "guided"

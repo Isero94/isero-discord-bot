@@ -63,7 +63,7 @@ def get_env_int(key: str, default: int) -> int:
 CHAR_ALTS = {
     "a": ["a", "á", "4", "@"],
     "e": ["e", "é", "3"],
-    "i": ["i", "í", "1", "!"],
+    "i": ["i", "í", "1", "!", "l"],
     "o": ["o", "ó", "ö", "ő", "0"],
     "u": ["u", "ú", "ü", "ű"],
     "c": ["c", "k", "ch"],
@@ -90,7 +90,7 @@ def _word_to_pattern(word: str) -> str:
         parts.append(group)
     # region ISERO PATCH PROFANITY_V2
     # Bővítés: c|ch alternáció már CHAR_ALTS-ban, separator szélesítése + DOTALL
-    joiner = r"(?:[\s\W_]*?)"
+    joiner = r"(?:[\s\W_]{0,3})"
     # endregion ISERO PATCH PROFANITY_V2
     return joiner.join(parts)
 

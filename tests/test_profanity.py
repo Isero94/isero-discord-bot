@@ -25,7 +25,7 @@ def test_variants_kurva():
 
 def test_variants_geci():
     pat = build_tolerant_pattern(["geci"])
-    variants = ["g3ci", "g e c i", "ge.ci", "gechi", "g\ne\nci"]
+    variants = ["g3ci", "g e c i", "ge.ci", "gechi", "g\ne\nc\ni"]
     for v in variants:
         _, cnt = soft_censor_text(v, pat)
         assert cnt == 1

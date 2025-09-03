@@ -56,3 +56,47 @@ def test_old_template_disabled():
 
     asyncio.run(run())
     assert sent and "alcsomag" not in sent[0]
+    assert "[3/5]" in sent[0]
+
+
+def test_old_template_when_flag_off():
+    settings.FEATURES_MEBINU_DIALOG_V1 = False
+    sent = []
+
+    class FakeResp:
+        async def send_message(self, content, **kw):
+            sent.append(content)
+
+    class FakeChannel:
+        id = 3
+        topic = "owner:3 | type:mebinu"
+
+    async def run():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        cog = TicketsCog(bot)
+        interaction = types.SimpleNamespace(user=types.SimpleNamespace(id=3, mention="@u"), channel=FakeChannel(), response=FakeResp(), created_at=None)
+        await cog.start_isero_flow(interaction)
+
+    asyncio.run(run())
+    assert sent and "alcsomag" in sent[0]
+
+
+def test_self_flow_modal_limit():
+    sent = []
+
+    class FakeResp:
+        async def send_modal(self, modal):
+            sent.append(modal)
+
+    class FakeInteraction:
+        user = types.SimpleNamespace(id=4)
+        channel = types.SimpleNamespace(id=4, topic="owner:4 | type:mebinu")
+        response = FakeResp()
+
+    async def run():
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+        cog = TicketsCog(bot)
+        await cog.start_self_flow(FakeInteraction())
+
+    asyncio.run(run())
+    assert sent and getattr(sent[0].desc, "max_length", 0) == 800
