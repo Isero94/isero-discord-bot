@@ -22,13 +22,6 @@ def _mask_preserving_separators(s: str) -> str:
     return ''.join(out)
 # endregion ISERO PATCH sep_and_mask
 
-
-def censor_token(token: str) -> str:
-    if len(token) <= 2:
-        return '*' * len(token)
-    return token[0] + ('*' * (len(token) - 2)) + token[-1]
-
-
 def soft_censor_text(text: str, pat: re.Pattern) -> Tuple[str, int]:
     matches = list(pat.finditer(text))
     out = text
@@ -50,9 +43,6 @@ class ProfanityWatcher(commands.Cog):
         self._compiled: List[Tuple[str, re.Pattern]] = []
         self._compile_patterns()
 
-    async def log(self, guild, text):
-        log.info(text)
-
     # region ISERO PATCH compile_patterns
     def _compile_patterns(self) -> None:
         """Szavak → toleráns regex minta."""
@@ -68,8 +58,6 @@ class ProfanityWatcher(commands.Cog):
                 'z': '[z2]',
                 'g': '[g9]',
                 'b': '[b8]',
-                'r': '[r4]',
-                't': '[t7]',
             }
             return m.get(ch.lower(), re.escape(ch))
 
@@ -121,13 +109,11 @@ class ProfanityWatcher(commands.Cog):
             try:
                 if self.per_user_throttle.allow(message.author.id, message.channel.id):
                     await textutil.safe_echo(self.bot, message.channel, redacted, mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True), author=message.author)
-                    await message.channel.send(f"{message.author.mention} figyelj a szóhasználatra.")
             except Exception:
                 log.exception("echo (owner/bot) failed")
             return
 
         if is_nsfw:
-            await self.log(message.guild, f"NSFW profanity by {message.author} in {message.channel.mention}: {content}")
             return
 
         try:
@@ -137,7 +123,6 @@ class ProfanityWatcher(commands.Cog):
         try:
             if self.per_user_throttle.allow(message.author.id, message.channel.id):
                 await textutil.safe_echo(self.bot, message.channel, redacted, mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True), author=message.author)
-                await message.channel.send(f"{message.author.mention} figyelj a szóhasználatra.")
         except Exception:
             log.exception("echo failed")
 
@@ -179,8 +164,6 @@ def build_tolerant_pattern(words: List[str]) -> re.Pattern:
             'z': '[z2]',
             'g': '[g9]',
             'b': '[b8]',
-            'r': '[r4]',
-            't': '[t7]',
         }
         return m.get(ch.lower(), re.escape(ch))
 
