@@ -11,7 +11,7 @@ from typing import Dict, Optional, List, Tuple
 import httpx
 import discord
 from discord.ext import commands
-from cogs.utils import context as ctxutil
+from cogs.utils import context as ctx_flags
 from bot.config import settings
 from cogs.agent.playerdb import PlayerDB
 
@@ -454,7 +454,7 @@ class AgentGate(commands.Cog):
             return
 
         # Moderáció által eltüntetett üzeneteket hagyjuk figyelmen kívül
-        if ctxutil.is_flagged(message, "moderated_hidden"):
+        if ctx_flags.is_flagged(self.bot, message):
             return
 
         if settings.OWNER_NL_ENABLED and raw.startswith(settings.OWNER_ACTIVATION_PREFIX):
@@ -484,6 +484,19 @@ class AgentGate(commands.Cog):
                 if BOT_COMMANDS_CHANNEL_ID:
                     dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":

@@ -2,21 +2,21 @@ from __future__ import annotations
 
 """Unicode-toleráns profanitás figyelő csillagozott echo-val."""
 
-try:  # Unicode regex, fallback stdlib re-re
-    import regex as re
+try:  # advanced unicode regex, fallback to stdlib
+    import regex as re  # type: ignore
     _HAS_REGEX = True
-except Exception:  # pragma: no cover - stdlib re fallback
+except Exception:  # pragma: no cover
     import re  # type: ignore
     _HAS_REGEX = False
 
+import asyncio
 import discord
 from discord import Forbidden, NotFound
 from discord.ext import commands
+from loguru import logger
 
-from utils import policy, throttling, text as textutil, logsetup
-from cogs.utils import context as ctxutil
-
-log = logsetup.get_logger(__name__)
+from cogs.utils import context as ctx_flags
+from utils import policy, throttling, text as textutil
 
 # szeparátor: szóköz, NBSP, nem-betű, szám, aláhúzás – max 3 egymás után
 SEP = r"(?:\s|\N{NO-BREAK SPACE}|[^\w]|[\d_]){0,3}"
@@ -50,7 +50,7 @@ class ProfanityWatcher(commands.Cog):
         if message.author.id in self.exempt_ids:
             return
         # már moderált? továbblépünk
-        if ctxutil.is_flagged(message, "moderated_hidden"):
+        if ctx_flags.is_flagged(self.bot, message):
             return
 
         txt = message.content or ""
@@ -87,7 +87,8 @@ class ProfanityWatcher(commands.Cog):
             return
 
         if self.mode == "echo_star":
-            ctxutil.flag(message, "moderated_hidden", True)
+            ctx_flags.mark_moderated(self.bot, message)
+            ctx_flags.mark_hidden(self.bot, message)
             try:
                 await message.delete()
             except (Forbidden, NotFound, AttributeError):
@@ -101,7 +102,7 @@ class ProfanityWatcher(commands.Cog):
                         ttl_seconds=self.echo_ttl,
                     )
                 except Exception:
-                    log.exception("Webhook echo failed, fallback send")
+                    logger.exception("Webhook echo failed, fallback send")
                     await message.channel.send(f"{message.author.mention}: {starred}")
 
         await textutil.modlog_profanity(message, original=txt, starred=starred, hits=hits, level=level)
