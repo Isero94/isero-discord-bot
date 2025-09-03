@@ -20,49 +20,30 @@ intents.reactions = True
 # ---- Env
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-EXTENSIONS = [
-    "cogs.utils.logsetup",
-    "cogs.utils.health",
-    "cogs.agent.agent_gate",
-    "cogs.tickets.tickets",
-    "cogs.ranks.progress",
-    "cogs.ranks.rolesync",
-    "cogs.watchers.lang_watch",
-    "cogs.watchers.keyword_watch",
-]
-
 class Bot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        # COG-ok betöltése
-        for ext in EXTENSIONS:
-            try:
-                await self.load_extension(ext)
-                log.info(f"Loaded cog: {ext}")
-            except Exception:
-                log.exception(f"Failed to load {ext}")
-        # region ISERO PATCH profanity_cog_switch
-        # v2 flag esetén a watcher (echo + YAML + tolerant regex) töltődik be.
-        # különben marad a legacy guard.
+        # ---------- ISERO PATCH: load order (profanity first) ----------
         from utils import policy as _policy
         want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2")
-        legacy = "cogs.moderation.profanity_guard"
-        watcher = "cogs.watchers.profanity_watch"
         if want_v2:
-            if legacy in self.extensions:
-                await self.unload_extension(legacy)
-            if watcher not in self.extensions:
-                await self.load_extension(watcher)
-                print("INFO:isero:Profanity Watcher v2 loaded")
+            await self.load_extension("cogs.watchers.profanity_watch")
+            log.info("Profanity Watcher v2 loaded (first)")
         else:
-            if watcher in self.extensions:
-                await self.unload_extension(watcher)
-            if legacy not in self.extensions:
-                await self.load_extension(legacy)
-                print("INFO:isero:Legacy Profanity Guard loaded")
-        # endregion ISERO PATCH profanity_cog_switch
+            await self.load_extension("cogs.moderation.profanity_guard")
+            log.info("Legacy Profanity Guard loaded")
+        await self.load_extension("cogs.watchers.lang_watch")
+        await self.load_extension("cogs.watchers.keyword_watch")
+        await self.load_extension("cogs.agent.agent_gate")
+        await self.load_extension("cogs.tickets.tickets")
+        await self.load_extension("cogs.ranks.progress")
+        await self.load_extension("cogs.ranks.rolesync")
+        await self.load_extension("cogs.utils.logsetup")
+        await self.load_extension("cogs.utils.health")
+        # ---------- ISERO PATCH END ----------
+
         # App parancsok csak guild-scope-on
         try:
             guild_obj = discord.Object(id=settings.GUILD_ID)

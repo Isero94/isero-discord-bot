@@ -117,6 +117,10 @@ def getint(key: str, default: int = 0) -> int:
         return default
 
 
+def getstr(key: str, default: str = "") -> str:
+    return os.getenv(key, default)
+
+
 def feature_on(name: str) -> bool:
     key = f"FEATURES_{name.upper()}"
     return getbool(key, False)

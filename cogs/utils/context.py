@@ -11,35 +11,31 @@ from cogs.utils.wake import WakeMatcher
 
 """Utilities for resolving message context and lightweight flags."""
 
-# Lightweight cross-cog flags for a Discord message.
-# Idempotens, safe to call multiple times.
-FLAGS_ATTR = "_isero_flags"
+# Lightweight cross-cog flags stored by message ID.
+_MSG_FLAGS: Dict[int, Dict[str, Any]] = {}
 
-def _get_flags(msg):
-    flags = getattr(msg, FLAGS_ATTR, None)
-    if flags is None:
-        flags = set()
-        setattr(msg, FLAGS_ATTR, flags)
-    return flags
+def _msg_key(message) -> int:
+    msg_id = getattr(message, "id", None)
+    return msg_id if isinstance(msg_id, int) and msg_id != 0 else id(message)
 
-def add_flag(msg, key: str):
-    _get_flags(msg).add(key)
+def flag(message, key, value=True) -> None:
+    _MSG_FLAGS.setdefault(_msg_key(message), {})[key] = value
 
-def has_flag(msg, key: str) -> bool:
-    return key in getattr(msg, FLAGS_ATTR, set())
+def is_flagged(message, key) -> bool:
+    return _MSG_FLAGS.get(_msg_key(message), {}).get(key, False)
 
-# Canonical flags used by moderation/watchers
+# Backwards compat helpers
 def mark_hidden(msg):
-    add_flag(msg, "hidden")
+    flag(msg, "hidden", True)
 
-def is_hidden(msg) -> bool:
-    return has_flag(msg, "hidden")
+def is_hidden(msg):
+    return is_flagged(msg, "hidden")
 
 def mark_moderated(msg):
-    add_flag(msg, "moderated")
+    flag(msg, "moderated_hidden", True)
 
-def is_moderated(msg) -> bool:
-    return has_flag(msg, "moderated")
+def is_moderated(msg):
+    return is_flagged(msg, "moderated_hidden")
 
 
 def _csv(val: str | None) -> list[str]:

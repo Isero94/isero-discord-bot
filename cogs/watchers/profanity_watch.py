@@ -1,191 +1,128 @@
 from __future__ import annotations
 
-from typing import List, Tuple
-import os
+"""Unicode-toleráns profanitás figyelő csillagozott echo-val."""
+
+try:  # Unicode regex, fallback stdlib re-re
+    import regex as re
+    _HAS_REGEX = True
+except Exception:  # pragma: no cover - stdlib re fallback
+    import re  # type: ignore
+    _HAS_REGEX = False
 
 import discord
+from discord import Forbidden, NotFound
 from discord.ext import commands
 
 from utils import policy, throttling, text as textutil, logsetup
-from cogs.utils import context as ctx
-
-# ISERO PATCH: tolerant matching + safe fallback to stdlib re
-try:
-    import regex as re  # better \p{L}, Unicode classes
-    _HAS_REGEX = True
-except Exception:
-    import re
-    _HAS_REGEX = False
+from cogs.utils import context as ctxutil
 
 log = logsetup.get_logger(__name__)
 
-# region ISERO PATCH sep_and_mask
-# Megengedett elválasztók a betűk között: szóköz, NBSP, újsor, írásjelek, számjegy, aláhúzás – max 3 hossz
-# Toleráns elválasztó a karakterek között:
-# szóköz / NBSP / nem-betű / szám / aláhúzás – legfeljebb 3 egymás után
-SEP = r"[\s\N{NO-BREAK SPACE}\W\d_]{0,3}" if _HAS_REGEX else r"[^\w]{0,3}"
-
-# Word-boundary közelítés: regex esetén \p{L}-t használunk, stdlib re esetén [^\W\d_] a „betű” közelítés.
-_BOUND_L = r"(?<!\p{L})" if _HAS_REGEX else r"(?<![^\W\d_])"
-_BOUND_R = r"(?!\p{L})" if _HAS_REGEX else r"(?![^\W\d_])"
-
-def _mask_preserving_separators(s: str) -> str:
-    """Csillagozza a betű/szám karaktereket, de meghagyja az elválasztókat."""
-    out = []
-    for ch in s:
-        out.append('*' if ch.isalnum() else ch)
-    return ''.join(out)
-# endregion ISERO PATCH sep_and_mask
-
-def soft_censor_text(text: str, pat: re.Pattern) -> Tuple[str, int]:
-    matches = list(pat.finditer(text))
-    out = text
-    for m in reversed(matches):
-        out = out[: m.start()] + _mask_preserving_separators(m.group(0)) + out[m.end():]
-    return out, len(matches)
+# szeparátor: szóköz, NBSP, nem-betű, szám, aláhúzás – max 3 egymás után
+SEP = r"(?:\s|\N{NO-BREAK SPACE}|[^\w]|[\d_]){0,3}"
 
 
 class ProfanityWatcher(commands.Cog):
+    """Toleráns profanitás figyelő, csillagozott echo-val."""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.echo_ttl = policy.getint("PROFANITY_ECHO_TTL_S", 30)
-        self.free_per_msg = policy.getint("PROFANITY_FREE_WORDS_PER_MSG", 2)
-        self.lvl1 = policy.getint("PROFANITY_LVL1_THRESHOLD", 5)
-        self.lvl2 = policy.getint("PROFANITY_LVL2_THRESHOLD", 8)
-        self.lvl3 = policy.getint("PROFANITY_LVL3_THRESHOLD", 10)
-        self.tout1 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL1", 40)
-        self.tout2 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL2", 480)
-        self.tout3 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL3", 0)
-        self.per_user_throttle = throttling.PerUserChannelTTL(self.echo_ttl)
-        self.audit_channel_id = policy.getint("CHANNEL_MOD_LOGS", default=0)
-        self.words_cfg = textutil.load_profanity_words()
+        self.mode = policy.getstr("PROFANITY_MODE", default="echo_star").lower()
+        self.free_per_msg = policy.getint("PROFANITY_FREE_WORDS_PER_MSG", default=2)
+        self.echo_ttl = policy.getint("PROFANITY_ECHO_TTL_S", default=30)
         self.exempt_ids = {
-            *{int(x) for x in os.getenv("PROFANITY_EXEMPT_USER_IDS", "").split(",") if x.strip()},
+            int(x.strip())
+            for x in policy.getstr("PROFANITY_EXEMPT_USER_IDS", default="").split(",")
+            if x.strip().isdigit()
         }
-        self._compiled: List[Tuple[str, re.Pattern]] = []
-        self._compile_patterns()
-
-    # region ISERO PATCH compile_patterns
-    def _compile_patterns(self) -> None:
-        """Szavak → toleráns regex minta."""
-        def var(ch: str) -> str:
-            m = {
-                'a': '[aá@]',
-                'e': '[eé3]',
-                'i': '[ií1l!]',
-                'o': '[oóöő0]',
-                'u': '[uúüűv]',
-                'c': '(?:c(?:h)?)',
-                's': '[s$5]',
-                'z': '[z2]',
-                'g': '[g9]',
-                'b': '[b8]',
-            }
-            return m.get(ch.lower(), re.escape(ch))
-
-        def build(word: str) -> re.Pattern:
-            parts = []
-            for ch in word:
-                parts.append(f"{var(ch)}+")
-            core = SEP.join(parts)
-            pat = rf"{_BOUND_L}{core}{_BOUND_R}"
-            return re.compile(pat, flags=re.DOTALL | re.IGNORECASE)
-
-        self._compiled.clear()
-        for w in self.words_cfg:
-            self._compiled.append((w, build(w)))
-        for w in ["bazdmeg", "seggfej", "anyád", "anyad"]:
-            self._compiled.append((w, build(w)))
-    # endregion ISERO PATCH compile_patterns
+        self.l1 = policy.getint("PROFANITY_LVL1_THRESHOLD", 5)
+        self.l2 = policy.getint("PROFANITY_LVL2_THRESHOLD", 8)
+        self.l3 = policy.getint("PROFANITY_LVL3_THRESHOLD", 11)
+        self.tmo2 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL2", 40)
+        self.tmo3 = policy.getint("PROFANITY_TIMEOUT_MIN_LVL3", 0)
+        self.per_user_throttle = throttling.PerUserChannelTTL(self.echo_ttl)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        # botok, DM-ek, self és exempt lista
+        if message.author.bot or not message.guild:
             return
-        owner_id = policy.getint("OWNER_ID", default=0)
-        is_owner = message.author.id == owner_id
-        is_bot_self = message.author.id == getattr(self.bot.user, "id", None)
+        if message.author.id in self.exempt_ids:
+            return
+        # már moderált? továbblépünk
+        if ctxutil.is_flagged(message, "moderated_hidden"):
+            return
 
-        content = message.content or ""
-        if not content:
+        txt = message.content or ""
+        if not txt:
             return
-        # Already handled? Bail.
-        if ctx.is_hidden(message) or ctx.is_moderated(message):
+
+        # profán találatok
+        hits = textutil.find_profanities(txt)
+        if not hits:
             return
+
+        excess = max(0, len(hits) - self.free_per_msg)
+        if excess > 0:
+            throttling.bump_score(
+                scope=("profanity", message.guild.id, message.author.id),
+                inc=excess,
+                ttl_seconds=policy.getint("AGENT_SESSION_WINDOW_SECONDS", 120),
+            )
+
+        score = throttling.get_score(("profanity", message.guild.id, message.author.id))
+        level = 0
+        if score >= self.l3:
+            level = 3
+        elif score >= self.l2:
+            level = 2
+        elif score >= self.l1:
+            level = 1
+
+        starred = textutil.star_out(txt, hits)
 
         is_nsfw = policy.is_nsfw(message.channel)
-        matches: List[Tuple[str, Tuple[int, int]]] = []
-        for name, pat in self._compiled:
-            for m in pat.finditer(content):
-                matches.append((m.group(0), m.span()))
-        if not matches:
-            return
-
-        redacted = content
-        for s, (a, b) in sorted(matches, key=lambda x: x[1][0], reverse=True):
-            redacted = redacted[:a] + _mask_preserving_separators(s) + redacted[b:]
-
-        try:
-            await textutil.send_audit(self.bot, self.audit_channel_id, message, reason="profanity", original=content, redacted=redacted)
-        except Exception:
-            log.exception("audit send failed")
-
-        if is_owner or is_bot_self:
-            try:
-                if self.per_user_throttle.allow(message.author.id, message.channel.id):
-                    await textutil.safe_echo(
-                        self.bot,
-                        message.channel,
-                        redacted,
-                        mimic_webhook=policy.getbool("USE_WEBHOOK_MIMIC", default=True),
-                        author=message.author,
-                    )
-            except Exception:
-                log.exception("echo (owner/bot) failed")
-            return
-
         if is_nsfw:
+            await textutil.modlog_profanity(message, original=txt, starred=starred, hits=hits, level=level)
             return
 
-        ctx.mark_moderated(message)
-        ctx.mark_hidden(message)
-        try:
-            await message.delete()
-        except Exception:
-            log.debug("delete failed", exc_info=True)
-        try:
+        if self.mode == "echo_star":
+            ctxutil.flag(message, "moderated_hidden", True)
+            try:
+                await message.delete()
+            except (Forbidden, NotFound, AttributeError):
+                pass
             if self.per_user_throttle.allow(message.author.id, message.channel.id):
-                await textutil.echo_masked(self.bot, message, redacted, ttl_s=self.echo_ttl)
-        except Exception:
-            log.exception("echo failed")
+                try:
+                    await textutil.webhook_echo(
+                        channel=message.channel,
+                        author=message.author,
+                        content=starred,
+                        ttl_seconds=self.echo_ttl,
+                    )
+                except Exception:
+                    log.exception("Webhook echo failed, fallback send")
+                    await message.channel.send(f"{message.author.mention}: {starred}")
 
-        bad_count = len(matches)
-        over = max(0, bad_count - self.free_per_msg)
-        penalize = message.author.id not in self.exempt_ids
-        if penalize and over > 0:
-            key = f"profanity:{message.guild.id}:{message.author.id}"
-            total = throttling.add_points(key, over, ttl=policy.getint("RECHECK_WINDOW_SECONDS", 180))
-            if total >= self.lvl3:
-                await textutil.timeout_member(message, self.tout3)
-            elif total >= self.lvl2:
-                await textutil.timeout_member(message, self.tout2)
-            elif total >= self.lvl1:
-                await textutil.timeout_member(message, policy.getint("PROFANITY_TIMEOUT_MIN_LVL2", 40))
-        return
+        await textutil.modlog_profanity(message, original=txt, starred=starred, hits=hits, level=level)
+
+        if level == 2 and self.tmo2 > 0:
+            await textutil.timeout_member(message.author, minutes=self.tmo2, reason="Profanity L2")
+        if level == 3:
+            await textutil.timeout_member(message.author, minutes=self.tmo3, reason="Profanity L3")
 
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(ProfanityWatcher(bot))
 
-
 # backwards compat
 ProfanityGuard = ProfanityWatcher
 
 
-def build_tolerant_pattern(words: List[str]) -> re.Pattern:
+def build_tolerant_pattern(words: list[str]) -> re.Pattern:
     def var(ch: str) -> str:
         m = {
-            'a': '[aá@]',
+            'a': '[aá@4]',
             'e': '[eé3]',
             'i': '[ií1l!]',
             'o': '[oóöő0]',
@@ -197,11 +134,21 @@ def build_tolerant_pattern(words: List[str]) -> re.Pattern:
             'b': '[b8]',
         }
         return m.get(ch.lower(), re.escape(ch))
+    parts = []
+    for w in words:
+        letters = [f"{var(ch)}+" for ch in w]
+        parts.append(SEP.join(letters))
+    core = "|".join(parts) or r"$^"
+    bound_l = r"(?<!\p{L})" if _HAS_REGEX else r"(?<![^\W\d_])"
+    bound_r = r"(?!\p{L})" if _HAS_REGEX else r"(?![^\W\d_])"
+    return re.compile(rf"{bound_l}(?:{core}){bound_r}", re.IGNORECASE | re.DOTALL)
 
-    patterns = []
-    for word in words:
-        parts = [f"{var(ch)}+" for ch in word]
-        patterns.append(SEP.join(parts))
-    core = "|".join(patterns) or r"$^"
-    boundary = rf"{_BOUND_L}(?:{core}){_BOUND_R}"
-    return re.compile(boundary, flags=re.DOTALL | re.IGNORECASE)
+
+def soft_censor_text(text: str, pat: re.Pattern) -> tuple[str, int]:
+    matches = list(pat.finditer(text))
+    out = text
+    for m in reversed(matches):
+        sub = textutil.star_out(m.group(0), [(0, len(m.group(0)))])
+        out = out[: m.start()] + sub + out[m.end():]
+    return out, len(matches)
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 from typing import Dict, Tuple
+import time
 
 class Deduper:
     """Per-channel dedup + cooldown. Nem enged duplát és túl sűrű választ."""
@@ -68,4 +69,17 @@ def add_points(key: str, amount: int, ttl: int = 180) -> int:
         total = 0
     total += int(amount)
     _points[key] = (total, now + ttl)
+    return total
+
+
+def bump_score(scope, inc: int, ttl_seconds: int) -> int:
+    key = ":".join(str(x) for x in scope)
+    return add_points(key, inc, ttl_seconds)
+
+
+def get_score(scope) -> int:
+    key = ":".join(str(x) for x in scope)
+    total, expires = _points.get(key, (0, 0.0))
+    if time.time() > expires:
+        return 0
     return total
