@@ -54,9 +54,12 @@ def test_false_positive():
     "bazdmeg",
     "bazd meg",
     "seggfej",
+    "kurvázik",
+    "kibaszott",
+    "szopd",
 ])
 def test_tolerant_variants_detected(txt):
-    pat = build_tolerant_pattern(["geci", "bazdmeg", "seggfej"])
+    pat = build_tolerant_pattern(["geci", "bazdmeg", "seggfej", "kurvázik", "kibaszott", "szopd"])
     _, cnt = soft_censor_text(txt, pat)
     assert cnt == 1
 
