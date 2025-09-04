@@ -25,15 +25,24 @@ class Bot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        # ---------- ISERO PATCH: load order (profanity first) ----------
         from utils import policy as _policy
-        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=False) or _policy.feature_on("profanity_v2")
+        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=True) or _policy.feature_on("profanity_v2")
+        legacy = "cogs.moderation.profanity_guard"
+        watcher = "cogs.watchers.profanity_watch"
         if want_v2:
-            await self.load_extension("cogs.watchers.profanity_watch")
-            log.info("Profanity Watcher v2 loaded (first)")
+            try:
+                if legacy in self.extensions:
+                    await self.unload_extension(legacy)
+            except Exception:
+                pass
+            await self.load_extension(watcher)
         else:
-            await self.load_extension("cogs.moderation.profanity_guard")
-            log.info("Legacy Profanity Guard loaded")
+            try:
+                if watcher in self.extensions:
+                    await self.unload_extension(watcher)
+            except Exception:
+                pass
+            await self.load_extension(legacy)
         await self.load_extension("cogs.watchers.lang_watch")
         await self.load_extension("cogs.watchers.keyword_watch")
         await self.load_extension("cogs.agent.agent_gate")
@@ -42,7 +51,6 @@ class Bot(commands.Bot):
         await self.load_extension("cogs.ranks.rolesync")
         await self.load_extension("cogs.utils.logsetup")
         await self.load_extension("cogs.utils.health")
-        # ---------- ISERO PATCH END ----------
 
         # App parancsok csak guild-scope-on
         try:
