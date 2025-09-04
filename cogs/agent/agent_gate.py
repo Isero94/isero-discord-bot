@@ -308,7 +308,9 @@ class AgentGate(commands.Cog):
         self._dedup: Dict[int, tuple[str, float]] = {}   # user_id -> (last_text, ts)
         self._ai_calls: Dict[Tuple[int, int], int] = {}
         self._last_msg: Dict[Tuple[int, int], float] = {}
-        self.db = None  # compatibility for watchers that expect ag.db
+        # Some legacy cogs (e.g. keyword watcher) still look for `ag.db`.
+        # Initialise to `None` so they can `getattr(ag, "db", None)` safely.
+        self.db = None
         self.env_status = {
             "bot_commands": BOT_COMMANDS_CHANNEL_ID or "unset",
             "suggestions": SUGGESTIONS_CHANNEL_ID or "unset",
@@ -484,6 +486,19 @@ class AgentGate(commands.Cog):
                 if BOT_COMMANDS_CHANNEL_ID:
                     dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":

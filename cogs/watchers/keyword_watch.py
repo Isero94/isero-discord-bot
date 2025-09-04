@@ -36,6 +36,8 @@ class KeywordWatch(commands.Cog):
             return
         # Retrieve the AgentGate cog to access the database
         ag = self.bot.get_cog("AgentGate")
+        # `AgentGate` may not always be configured with a database.  Older
+        # deployments simply omitted it, so fall back gracefully if missing.
         db = getattr(ag, "db", None)
         if db is None:
             return  # no DB available – exit quietly
