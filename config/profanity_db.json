@@ -1,0 +1,11 @@
+{
+  "//": "HU/EN tövek + kifejezések. A teljes lefedéshez a packs fájlokból is betöltünk.",
+  "hu": {
+    "stems": ["kurva","geci","fasz","pina","picsa","anyád","buzi","szar","csicska","kúr","segg"],
+    "phrases": ["bazd meg","seggfej"]
+  },
+  "en": {
+    "stems": ["fuck","shit","bitch","ass","dick","cunt","pussy","bastard"],
+    "phrases": ["asshole","bullshit"]
+  }
+}
