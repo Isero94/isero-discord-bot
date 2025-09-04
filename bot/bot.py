@@ -5,6 +5,8 @@ import logging
 import discord
 from discord.ext import commands
 
+from bot.config import settings
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
 
@@ -17,40 +19,50 @@ intents.reactions = True
 
 # ---- Env
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-
-EXTENSIONS = [
-    "cogs.utils.logsetup",
-    "cogs.agent.agent_gate",
-    "cogs.tickets.tickets",
-    "cogs.ranks.progress",
-    "cogs.ranks.rolesync",
-    "cogs.watchers.lang_watch",
-    "cogs.watchers.keyword_watch",
-    "cogs.moderation.profanity_guard",  # <-- fontos
-]
 
 class Bot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        # COG-ok betöltése
-        for ext in EXTENSIONS:
+        from utils import policy as _policy
+        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=True) or _policy.feature_on("profanity_v2")
+        legacy = "cogs.moderation.profanity_guard"
+        watcher = "cogs.watchers.profanity_watch"
+        if want_v2:
             try:
-                await self.load_extension(ext)
-                log.info(f"Loaded cog: {ext}")
+                if legacy in self.extensions:
+                    await self.unload_extension(legacy)
             except Exception:
-                log.exception(f"Failed to load {ext}")
+                pass
+            await self.load_extension(watcher)
+        else:
+            try:
+                if watcher in self.extensions:
+                    await self.unload_extension(watcher)
+            except Exception:
+                pass
+            await self.load_extension(legacy)
+        await self.load_extension("cogs.watchers.lang_watch")
+        await self.load_extension("cogs.watchers.keyword_watch")
+        await self.load_extension("cogs.agent.agent_gate")
+        await self.load_extension("cogs.tickets.tickets")
+        await self.load_extension("cogs.ranks.progress")
+        await self.load_extension("cogs.ranks.rolesync")
+        await self.load_extension("cogs.utils.logsetup")
+        await self.load_extension("cogs.utils.health")
 
-        # App parancsok gyors szinkron
+        # App parancsok csak guild-scope-on
         try:
-            if GUILD_ID:
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                log.info(f"App commands synced to guild {GUILD_ID}")
-            else:
-                await self.tree.sync()
-                log.info("App commands synced (global)")
+            guild_obj = discord.Object(id=settings.GUILD_ID)
+            # töröljük a globál parancsokat
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+            # sync guildre
+            await self.tree.sync(guild=guild_obj)
+            names = [c.name for c in await self.tree.fetch_commands(guild=guild_obj)]
+            log.info("Registered app commands (guild %s): %s", guild_obj.id, names)
+            log.info("Registered app commands count: %d", len(names))
         except Exception:
             log.exception("Command sync failed")
 
