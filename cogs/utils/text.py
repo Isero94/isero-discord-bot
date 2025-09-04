@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import yaml
 import discord
 from loguru import logger as log
+from .profanity_db import load_db
 
 from bot.config import settings
 from utils import policy, logsetup
@@ -68,6 +69,13 @@ _PROF_SCORES: Dict[int, int] = {}
 
 
 def load_profanity_words() -> List[str]:
+    """Unified loader: mini DB + pack fájlok + YAML/env fallback."""
+    db_path = os.getenv("PROFANITY_DB_PATH", "config/profanity_db.json")
+    packs_env = os.getenv("PROFANITY_PACKS", "")
+    packs = [p for p in packs_env.split(";") if p.strip()]
+    words = load_db(db_path, packs)
+    if words:
+        return words
     path = Path("config/profanity.yml")
     if path.exists():
         try:

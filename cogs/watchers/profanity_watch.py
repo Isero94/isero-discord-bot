@@ -1,43 +1,22 @@
-try:
-    import regex as re
-except Exception:
-    import re
 import asyncio
 from discord.ext import commands
 from loguru import logger
 from cogs.utils import context as ctx_flags
 from utils import policy, text as textutil
-
-# region ISERO PATCH profanity_sep_and_variants
-# Toleráns elválasztó: szóköz, NBSP, \W, szám, aláhúzás – max 3 jel
-SEP = r"(?:[\s\N{NO-BREAK SPACE}\W\d_]{0,3})"
+import re
+from ..utils.profanity_patterns import build_patterns_with_sepmax, find_matches, mask_spans
 
 WORDLIST = textutil.load_profanity_words()
-logger.info(f"Loaded profanity YAML ({len(WORDLIST)} words)")
+logger.info(f"Loaded profanity wordlist ({len(WORDLIST)} entries)")
+SEP_MAX = int(policy.getenv("PROFANITY_SEP_MAX", "4") or "4")
+REPEAT_MAX = int(policy.getenv("PROFANITY_REPEAT_MAX", "6") or "6")
+PATTERNS = build_patterns_with_sepmax(WORDLIST, sepmax=SEP_MAX, repeatmax=REPEAT_MAX)
 USE_WEBHOOK = policy.getbool("USE_WEBHOOK_MIMIC", default=True)
 MODE = policy.getenv("PROFANITY_MODE", "echo_star")
 
-VAR = {"a":"[aá4@]","e":"[eé3]","i":"[ií1l]","o":"[oó0]","u":"[uúűü]","c":"c(?:h)?","sz":"s(?:z)?"}
-def build_token(tok:str)->str:
-    tok=tok.lower()
-    parts=[]
-    i=0
-    while i<len(tok):
-        if tok[i:i+2]=="sz":
-            parts.append(VAR["sz"]+"+")
-            i+=2
-            continue
-        ch=tok[i]
-        parts.append(VAR.get(ch, re.escape(ch))+"+")
-        i+=1
-    return SEP.join(parts)
-TOKENS={w:re.compile(build_token(w), re.IGNORECASE|re.UNICODE) for w in WORDLIST}
-TOKENS["bazd"+SEP+"meg"]=re.compile("bazd"+SEP+"meg", re.IGNORECASE|re.UNICODE)
-# endregion ISERO PATCH profanity_sep_and_variants
-
 def build_tolerant_pattern(words):
-    parts=[f"(?:{build_token(w)})" for w in words]
-    return re.compile("|".join(parts), re.IGNORECASE|re.UNICODE)
+    pats = build_patterns_with_sepmax(words, sepmax=SEP_MAX, repeatmax=REPEAT_MAX)
+    return re.compile("|".join(p.pattern for p in pats), re.IGNORECASE | re.UNICODE)
 
 def soft_censor_text(text, pattern):
     spans=[m.span() for m in pattern.finditer(text)]
@@ -81,12 +60,7 @@ class ProfanityWatcher(commands.Cog):
         txt = message.content or ""
         if not txt.strip():
             return
-        spans=[]
-        words=[]
-        for pat in TOKENS.values():
-            for m in pat.finditer(txt):
-                spans.append((m.start(),m.end()))
-                words.append(m.group(0))
+        spans = find_matches(PATTERNS, txt)
         if not spans:
             return
         ctx_flags.mark_moderated(message)
@@ -95,7 +69,7 @@ class ProfanityWatcher(commands.Cog):
             await message.delete()
         except Exception:
             pass
-        starred = textutil.star_mask_all(txt, match_words=words)
+        starred = mask_spans(txt, spans)
         await textutil.send_audit(self.bot, policy.getint("CHANNEL_MOD_LOGS",0), message, reason="profanity", original=txt, redacted=starred)
         if policy.is_nsfw(message.channel):
             return

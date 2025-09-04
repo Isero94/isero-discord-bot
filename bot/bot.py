@@ -69,6 +69,13 @@ class Bot(commands.Bot):
         except Exception:
             log.exception("Command sync failed")
 
+        # region ISERO PATCH attach-profanity-handle
+        try:
+            self.profanity_watcher = self.get_cog("ProfanityWatcher")
+        except Exception:
+            self.profanity_watcher = None
+        # endregion ISERO PATCH attach-profanity-handle
+
     async def on_ready(self):
         log.info(f"Logged in as {self.user} ({self.user.id})")
 
