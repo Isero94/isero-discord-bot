@@ -1,5 +1,8 @@
 # region ISERO PATCH hu-tolerant-patterns
-import re
+try:
+    import regex as re  # supports Unicode properties like \P{L}
+except Exception:  # pragma: no cover
+    import re
 from typing import Iterable, List, Tuple
 
 __all__ = [
@@ -32,7 +35,8 @@ def _char(c: str) -> str:
 
 def _sep(max_n: int) -> str:
     n = max(0, min(int(max_n or 0), 8))
-    return rf"(?:[\s\u00A0]|{SEP_SYMBOLS}{{1,4}}|\d){{0,{n}}}"
+    # Allow any non-letter sequence (emoji, punctuation, spaces) up to n chars
+    return rf"(?:\P{{L}}){{0,{n}}}"
 
 def _token_pat(token: str, sepmax: int, repeatmax: int) -> str:
     SEP = _sep(sepmax)

@@ -893,6 +893,19 @@ class AgentGate(commands.Cog):
                 await self._safe_send_reply(message, part)
             return
 
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
+            return
+
         if ctx.is_ticket and ctx.ticket_type == "mebinu":
             questions = [
                 "Melyik termék vagy téma? (figura/variáns)",

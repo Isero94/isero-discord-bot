@@ -3,7 +3,10 @@ from discord.ext import commands
 from loguru import logger
 from cogs.utils import context as ctx_flags
 from utils import policy, text as textutil
-import re
+try:
+    import regex as re
+except Exception:  # pragma: no cover
+    import re
 from ..utils.profanity_patterns import build_patterns_with_sepmax, find_matches, mask_spans
 
 WORDLIST = textutil.load_profanity_words()
