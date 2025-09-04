@@ -1,0 +1,7 @@
+name: "NSFW 18+"
+policy: |
+  SAFE MODE: The bot must not author the request. User-only input.
+  Ask the user to write the exact request and attach references.
+instructions: |
+  Kérjük, írd le a kérést pontosan (leírás, pózok, közelik), és tölts fel
+  referenciát. A bot itt nem válaszol kreatívan; csak rögzít és auditál.
