@@ -128,21 +128,17 @@ def feature_on(name: str) -> bool:
     key = f"FEATURES_{name.upper()}"
     return getbool(key, False)
 
+# region ISERO PATCH profanity_helpers
+def is_exempt_user(user) -> bool:
+    ids = os.getenv("PROFANITY_EXEMPT_USER_IDS", "")
+    idset = {int(x.strip()) for x in ids.split(",") if x.strip().isdigit()}
+    return int(getattr(user, "id", 0)) in idset
 
-def is_nsfw(ch: discord.abc.GuildChannel) -> bool:
-    if callable(getattr(ch, "is_nsfw", None)):
-        try:
-            if ch.is_nsfw():
-                return True
-        except Exception:
-            pass
-    if getattr(ch, "nsfw", False):
-        return True
-    if getattr(ch, "category", None) and ch.category.id == settings.CATEGORY_NSFW:
-        return True
-    if ch.id in settings.nsfw_channels:
-        return True
-    return False
+def is_nsfw(channel) -> bool:
+    nsfw_ids = os.getenv("NSFW_CHANNELS", "")
+    idset = {int(x.strip()) for x in nsfw_ids.split(",") if x.strip().isdigit()}
+    return getattr(channel, "id", 0) in idset or getattr(channel, "is_nsfw", lambda: False)()
+# endregion ISERO PATCH profanity_helpers
 # endregion ISERO PATCH feature_helpers
 
 # region ISERO PATCH profanity_timeouts

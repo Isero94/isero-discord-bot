@@ -140,6 +140,27 @@ async def timeout_member(message: discord.Message, minutes: int):
         log.warning(f"timeout_member failed: {e}")
 # endregion ISERO PATCH profanity_helpers
 
+# region ISERO PATCH star_mask_all
+try:
+    import regex as _re  # type: ignore
+except Exception:  # pragma: no cover
+    import re as _re  # type: ignore
+
+def star_mask_all(text: str, match_words: list[str]) -> str:
+    """Star out every profane word while keeping first/last chars."""
+    if not match_words:
+        return text
+
+    def _mask(m: _re.Match) -> str:
+        w = m.group(0)
+        if len(w) <= 2:
+            return w[0] + "*" * (len(w) - 1)
+        return w[0] + "*" * (len(w) - 2) + w[-1]
+
+    pat = "(" + "|".join(match_words) + ")"
+    return _re.sub(pat, _mask, text, flags=_re.IGNORECASE | _re.DOTALL)
+# endregion ISERO PATCH star_mask_all
+
 # --- ISERO PATCH profanity detection helpers ---
 try:
     import regex as _re

@@ -3,7 +3,7 @@ import re
 import logging
 import discord
 from discord.ext import commands
-from cogs.utils import context as ctx_flags
+from cogs.utils import context as ctx
 
 log = logging.getLogger("isero.watch.lang")
 
@@ -18,7 +18,7 @@ class LangWatch(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if ctx_flags.is_flagged(self.bot, message):
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
             return
         if message.author.bot or not message.guild:
             return

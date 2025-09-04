@@ -1,7 +1,7 @@
 FEATURE_NAME = "keyword"
 
 from discord.ext import commands
-from cogs.utils import context as ctx_flags
+from cogs.utils import context as ctx
 
 async def setup(bot):
     # Register this cog with the bot
@@ -24,7 +24,7 @@ class KeywordWatch(commands.Cog):
     async def on_message(self, message):
         """Listens for messages and updates player state when keywords are detected."""
         # Skip if moderation already consumed the message
-        if ctx_flags.is_flagged(self.bot, message):
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
             return
         if message.guild is None or message.author.bot:
             return

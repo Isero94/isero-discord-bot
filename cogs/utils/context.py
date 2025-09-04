@@ -11,42 +11,38 @@ from cogs.utils.wake import WakeMatcher
 
 """Utilities for resolving message context and cross-cog message flags."""
 
-# ---------------------------------------------------------------------------
-# Lightweight message-flag API so cogs can short-circuit on moderated/hidden
-# messages. Flags are stored on the bot instance to be accessible across cogs.
-# ---------------------------------------------------------------------------
+# region ISERO PATCH moderated_skip_helpers
+_flags: dict[int, set[str]] = {}
 
-HIDDEN = "isero.hidden"
-MODERATED = "isero.moderated"
+def _get_flags(msg):
+    key = id(msg)
+    bag = _flags.get(key)
+    if bag is None:
+        bag = set()
+        _flags[key] = bag
+    return bag
 
-def _bags(bot):
-    if not hasattr(bot, "_isero_flags"):
-        bot._isero_flags = {HIDDEN: set(), MODERATED: set()}
-    return bot._isero_flags
+def _add_flag(msg, key: str) -> None:
+    _get_flags(msg).add(key)
 
-def _key(message):
-    ch_id = getattr(getattr(message, "channel", None), "id", 0)
-    msg_id = getattr(message, "id", None)
-    if not isinstance(msg_id, int) or msg_id == 0:
-        msg_id = id(message)
-    return ch_id, msg_id
+def _has_flag(msg, key: str) -> bool:
+    return key in _flags.get(id(msg), set())
 
-def mark_hidden(bot, message):
-    _bags(bot)[HIDDEN].add(_key(message))
+def mark_hidden(message) -> None:
+    _add_flag(message, "hidden")
 
-def mark_moderated(bot, message):
-    _bags(bot)[MODERATED].add(_key(message))
+def mark_moderated(message) -> None:
+    _add_flag(message, "moderated")
 
-def is_hidden(bot, message) -> bool:
-    return _key(message) in _bags(bot)[HIDDEN]
+def is_hidden(message) -> bool:
+    return _has_flag(message, "hidden")
 
-def is_moderated(bot, message) -> bool:
-    return _key(message) in _bags(bot)[MODERATED]
+def is_moderated(message) -> bool:
+    return _has_flag(message, "moderated")
 
-def is_flagged(bot, message) -> bool:
-    key = _key(message)
-    bags = _bags(bot)
-    return key in bags[HIDDEN] or key in bags[MODERATED]
+def is_flagged(message) -> bool:
+    return is_hidden(message) or is_moderated(message)
+# endregion ISERO PATCH moderated_skip_helpers
 
 
 def _csv(val: str | None) -> list[str]:

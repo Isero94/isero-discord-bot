@@ -26,23 +26,26 @@ class Bot(commands.Bot):
 
     async def setup_hook(self) -> None:
         from utils import policy as _policy
-        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=True) or _policy.feature_on("profanity_v2")
+        # region ISERO PATCH profanity_cog_switch
         legacy = "cogs.moderation.profanity_guard"
         watcher = "cogs.watchers.profanity_watch"
-        if want_v2:
-            try:
+        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=True) or _policy.feature_on("profanity_v2")
+        try:
+            if want_v2:
                 if legacy in self.extensions:
                     await self.unload_extension(legacy)
-            except Exception:
-                pass
-            await self.load_extension(watcher)
-        else:
-            try:
+                if watcher not in self.extensions:
+                    await self.load_extension(watcher)
+                log.info("Profanity Watcher v2 loaded (first)")
+            else:
                 if watcher in self.extensions:
                     await self.unload_extension(watcher)
-            except Exception:
-                pass
-            await self.load_extension(legacy)
+                if legacy not in self.extensions:
+                    await self.load_extension(legacy)
+                log.info("Legacy Profanity Guard loaded")
+        except Exception:
+            log.exception("Profanity cog switch failed")
+        # endregion ISERO PATCH profanity_cog_switch
         await self.load_extension("cogs.watchers.lang_watch")
         await self.load_extension("cogs.watchers.keyword_watch")
         await self.load_extension("cogs.agent.agent_gate")
