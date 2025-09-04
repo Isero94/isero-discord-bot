@@ -5,6 +5,8 @@ import logging
 import discord
 from discord.ext import commands
 
+from bot.config import settings
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
 
@@ -17,40 +19,53 @@ intents.reactions = True
 
 # ---- Env
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID", "0"))
-
-EXTENSIONS = [
-    "cogs.utils.logsetup",
-    "cogs.agent.agent_gate",
-    "cogs.tickets.tickets",
-    "cogs.ranks.progress",
-    "cogs.ranks.rolesync",
-    "cogs.watchers.lang_watch",
-    "cogs.watchers.keyword_watch",
-    "cogs.moderation.profanity_guard",  # <-- fontos
-]
 
 class Bot(commands.Bot):
     def __init__(self) -> None:
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        # COG-ok betöltése
-        for ext in EXTENSIONS:
-            try:
-                await self.load_extension(ext)
-                log.info(f"Loaded cog: {ext}")
-            except Exception:
-                log.exception(f"Failed to load {ext}")
-
-        # App parancsok gyors szinkron
+        from utils import policy as _policy
+        # region ISERO PATCH profanity_cog_switch
+        legacy = "cogs.moderation.profanity_guard"
+        watcher = "cogs.watchers.profanity_watch"
+        want_v2 = _policy.getbool("FEATURES_PROFANITY_V2", default=True) or _policy.feature_on("profanity_v2")
         try:
-            if GUILD_ID:
-                await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-                log.info(f"App commands synced to guild {GUILD_ID}")
+            if want_v2:
+                if legacy in self.extensions:
+                    await self.unload_extension(legacy)
+                if watcher not in self.extensions:
+                    await self.load_extension(watcher)
+                log.info("Profanity Watcher v2 loaded (first)")
             else:
-                await self.tree.sync()
-                log.info("App commands synced (global)")
+                if watcher in self.extensions:
+                    await self.unload_extension(watcher)
+                if legacy not in self.extensions:
+                    await self.load_extension(legacy)
+                log.info("Legacy Profanity Guard loaded")
+        except Exception:
+            log.exception("Profanity cog switch failed")
+        # endregion ISERO PATCH profanity_cog_switch
+        await self.load_extension("cogs.watchers.lang_watch")
+        await self.load_extension("cogs.watchers.keyword_watch")
+        await self.load_extension("cogs.agent.agent_gate")
+        await self.load_extension("cogs.tickets.tickets")
+        await self.load_extension("cogs.ranks.progress")
+        await self.load_extension("cogs.ranks.rolesync")
+        await self.load_extension("cogs.utils.logsetup")
+        await self.load_extension("cogs.utils.health")
+
+        # App parancsok csak guild-scope-on
+        try:
+            guild_obj = discord.Object(id=settings.GUILD_ID)
+            # töröljük a globál parancsokat
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+            # sync guildre
+            await self.tree.sync(guild=guild_obj)
+            names = [c.name for c in await self.tree.fetch_commands(guild=guild_obj)]
+            log.info("Registered app commands (guild %s): %s", guild_obj.id, names)
+            log.info("Registered app commands count: %d", len(names))
         except Exception:
             log.exception("Command sync failed")
 

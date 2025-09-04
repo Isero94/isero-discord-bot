@@ -1,6 +1,7 @@
 FEATURE_NAME = "keyword"
 
 from discord.ext import commands
+from cogs.utils import context as ctx
 
 async def setup(bot):
     # Register this cog with the bot
@@ -22,7 +23,9 @@ class KeywordWatch(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         """Listens for messages and updates player state when keywords are detected."""
-        # Ignore direct messages and messages from bots
+        # Skip if moderation already consumed the message
+        if ctx.is_hidden(message) or ctx.is_moderated(message):
+            return
         if message.guild is None or message.author.bot:
             return
         # Normalise message content to lowercase for matching
@@ -33,12 +36,22 @@ class KeywordWatch(commands.Cog):
             return
         # Retrieve the AgentGate cog to access the database
         ag = self.bot.get_cog("AgentGate")
-        if not ag:
-            return
-        db = ag.db
-        # Award tokens based on the number of keyword matches
-        await db.add_tokens(message.author.id, matches)
-        # Increase marketing score for the user proportionally to keyword matches
-        await db.bump_marketing(message.author.id, matches)
-        # You could add more actions here if needed (e.g., triggering notifications)
+        db = getattr(ag, "db", None)
+        if db is None:
+            return  # no DB available – exit quietly
+
+        intent = "other"
+        if "help" in content:
+            intent = "help"
+        elif any(k in content for k in {"commission", "rajz", "draw"}):
+            intent = "brief"
+        elif "mebinu" in content:
+            intent = "buy"
+        elif "hentai" in content:
+            intent = "nsfw"
+        score = min(100, matches * 10)
+        try:
+            await db.log_signal(message.author.id, message.channel.id, 0.0, intent, score)
+        except Exception:
+            pass
         return
