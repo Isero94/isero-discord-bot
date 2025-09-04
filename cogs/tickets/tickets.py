@@ -4,6 +4,8 @@ import re
 import time
 import asyncio
 import typing as T
+import os
+import datetime as dt
 
 import discord
 from discord import app_commands
@@ -11,6 +13,8 @@ from discord.ext import commands
 
 from bot.config import settings
 from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow
+from cogs.utils.ticket_kb import load_ticket_kb
+from utils.text import truncate_by_chars
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
 TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
@@ -201,6 +205,14 @@ class TicketsCog(commands.Cog):
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
+        # region ISERO PATCH ticket-kb-init
+        kb_dir = os.getenv("TICKET_KB_DIR", "config/tickets")
+        try:
+            self.kb = load_ticket_kb(kb_dir)
+        except Exception:
+            self.kb = {}
+        self.default_sla_days = int(os.getenv("TICKET_DEFAULT_SLA_DAYS", "3") or "3")
+        # endregion ISERO PATCH ticket-kb-init
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
@@ -232,6 +244,25 @@ class TicketsCog(commands.Cog):
             "*Használd a piros gombot, ha végeztél: Close Ticket.*"
         )
         return e
+
+    # region ISERO PATCH post-welcome
+    async def post_welcome_and_sla(self, channel: discord.TextChannel, kind: str, opener: discord.Member):
+        kb = (self.kb or {}).get(kind, {})
+        now = dt.datetime.utcnow()
+        due = now + dt.timedelta(days=self.default_sla_days)
+        due_unix = int(due.timestamp())
+        title = f"{kb.get('name', kind.replace('-', ' ').title())} Ticket"
+        desc = truncate_by_chars(kb.get('instructions') or kb.get('system_prompt') or '', 1000)
+        embed = discord.Embed(title=title, description=desc, color=0x5FBF7F)
+        embed.add_field(name="SLA (puha határidő)", value=f"<t:{due_unix}:R> (≈ {self.default_sla_days} nap)", inline=False)
+        send = getattr(channel, "send", None)
+        if not callable(send):
+            return
+        try:
+            await send(content=f"{opener.mention}", embed=embed)
+        except Exception:
+            await send(embed=embed)
+    # endregion ISERO PATCH post-welcome
 
     # --------- Utilities ----------
     def _cooldown_left(self, user_id: int) -> int:
@@ -506,6 +537,14 @@ class TicketsCog(commands.Cog):
                     except discord.Forbidden:
                         pass
             await message.channel.send(f"Cleanup done. Deleted: **{deleted}**")
+
+    # region ISERO PATCH ticket-deadline-cmd
+    @commands.hybrid_command(name="deadline", description="Mutatja a ticket puha határidejét.")
+    async def deadline(self, ctx: commands.Context):
+        days = self.default_sla_days
+        due = dt.datetime.utcnow() + dt.timedelta(days=days)
+        await ctx.reply(f"Puha határidő: <t:{int(due.timestamp())}:R> (≈ {days} nap)")
+    # endregion ISERO PATCH ticket-deadline-cmd
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketsCog(bot))

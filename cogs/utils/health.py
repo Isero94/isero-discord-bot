@@ -42,6 +42,7 @@ class Health(commands.Cog):
         prof_source = getattr(pg, "source", "unknown")
         free_words = getattr(pg, "free_per_msg", 0)
         prof_diag = format_profanity_diag(self.bot)
+        ticket_diag = format_ticket_kb_diag(self.bot)
         ctx = await resolve(interaction)
         msg = (
             f"trigger_reason={reason}\n"
@@ -51,7 +52,7 @@ class Health(commands.Cog):
             f"is_nsfw={ctx.is_nsfw} owner={ctx.is_owner} staff={ctx.is_staff} "
             f"locale={ctx.locale} char_limit={ctx.char_limit} "
             f"brief_limits={ctx.brief_char_limit}/{ctx.brief_image_limit}\n"
-            f"{prof_diag} "
+            f"{prof_diag} {ticket_diag} "
             f"prof_cog={prof_module} prof_src={prof_source} free_words={free_words} "
             f"features profanity_v2={settings.FEATURES_PROFANITY_V2} mebinu_dialog_v1={settings.FEATURES_MEBINU_DIALOG_V1}\n"
             f"env bot_commands={env.get('bot_commands', 'unset')} "

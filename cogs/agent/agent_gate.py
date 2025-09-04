@@ -311,6 +311,7 @@ class AgentGate(commands.Cog):
         # Some legacy cogs (e.g. keyword watcher) still look for `ag.db`.
         # Initialise to `None` so they can `getattr(ag, "db", None)` safely.
         self.db = None
+        self.session_context: Dict[int, dict] = {}
         self.env_status = {
             "bot_commands": BOT_COMMANDS_CHANNEL_ID or "unset",
             "suggestions": SUGGESTIONS_CHANNEL_ID or "unset",
@@ -348,6 +349,20 @@ class AgentGate(commands.Cog):
             self._user_cooldowns[user_id] = time.time()
             return True
         return False
+
+    # region ISERO PATCH start-session
+    async def start_session(self, channel, system_prompt: str, prefer_heavy: bool = False, ttl_seconds: int = 120):
+        """Start a guided agent session with optional heavy model preference."""
+        try:
+            self.session_context[channel.id] = {
+                "system": system_prompt,
+                "prefer_heavy": prefer_heavy,
+                "ttl": ttl_seconds,
+            }
+            await channel.send("ISERO bekapcsolt. Kezdjük a briefet! ✍️")
+        except Exception:
+            pass
+    # endregion ISERO PATCH start-session
 
     def _ai_gate(self, message: discord.Message, ctx) -> bool:
         if not settings.FEATURES_AI_GATE_V1:
@@ -486,6 +501,19 @@ class AgentGate(commands.Cog):
                 if BOT_COMMANDS_CHANNEL_ID:
                     dest = _channel_mention(message.guild, BOT_COMMANDS_CHANNEL_ID, "bot-commands")
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
+            return
+
+        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
+            questions = [
+                "Melyik termék vagy téma? (figura/variáns)",
+                "Mennyiség, ritkaság, színvilág?",
+                "Határidő (nap/dátum)?",
+                "Keret (HUF/EUR)?",
+                "Van 1–4 referencia kép?",
+                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
+            ]
+            for part in chunk_message("\n".join(questions)):
+                await self._safe_send_reply(message, part)
             return
 
         if decision.mode == "guided" and ctx.ticket_type == "mebinu":
