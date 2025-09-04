@@ -1,0 +1,10 @@
+name: "General Help"
+system_prompt: |
+  You are ISERO support. Gather a short summary of the user's issue, ask for
+  steps to reproduce, expected vs actual, screenshots/links. Create a clear
+  action list and set a 3-day soft SLA by default.
+questions:
+  - "Mi a probléma röviden (1-2 mondat)?"
+  - "Mit vártál, és mi történt valójában?"
+  - "Hogyan lehet reprodukálni? (lépések)"
+  - "Van log/képernyőkép/link?"

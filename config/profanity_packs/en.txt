@@ -1,0 +1,20 @@
+# region ISERO PATCH profanity-pack-en
+fuck
+fucking
+fucked
+shit
+bitch
+ass
+asshole
+dick
+cunt
+pussy
+bastard
+jerk
+bullshit
+prick
+twat
+slag
+slut
+whore
+# endregion ISERO PATCH profanity-pack-en
