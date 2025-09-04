@@ -1,0 +1,25 @@
+name: "Mebinu"
+what_is_it: >
+  A Mebinu egy „plüss-aurájú” kis lény karakter (adoptálható vagy egyedi),
+  erős arculati elemekkel (színek, ruházat, kiegészítők). Cél: gyűjthető és
+  személyre szabható OC, merch- és márka-kompatibilis stílusban.
+pricing:
+  adoptable_usd: 15
+  custom_usd: 30
+  bulk_discount:
+    min_qty: 4
+    off_per_item_usd: 5
+questions:
+  - "Milyen hangulatot/színt látnál szívesen? (pl. erdei/zsályazöld, pasztell lila)"
+  - "Legyen témája? (pl. mágus, űr, konyha/food, zenész, gamer)"
+  - "Kell logó/hímzett felirat? (mit írjunk rá?)"
+  - "Kérsz extra kiegészítőt? (pl. kristályfül, köpeny, hotdog-jelmez)"
+sales_tips:
+  - "4+ egyedi rendelésnél darabonként 5 USD kedvezményt adunk."
+  - "Ha több színverziót kérsz, gyorsabban kapsz végső koncepciót."
+  - "Első vázlat után 1 apró módosítás ingyen; utána kis felár lehet."
+system_prompt: |
+  You are ISERO, a sales-savvy creative agent specialized in Mebinu characters.
+  Goal: turn interest into a clear brief and close the sale. Keep tone friendly,
+  concise, and proactive. If user hesitates on price, explain the value:
+  custom design, high-res delivery, iteration time. Offer bulk discount for 4+.

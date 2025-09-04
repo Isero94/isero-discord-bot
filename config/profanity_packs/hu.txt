@@ -1,0 +1,25 @@
+# region ISERO PATCH profanity-pack-hu
+# Egy szó/kifejezés soronként. A builder variánsosít (leet/ékezet/pont./számok/ismétlés).
+kurva
+geci
+fasz
+faszfej
+faszszopó
+faszom
+anyád
+buzi
+szar
+szaros
+kúr
+basz
+bazd meg
+picsa
+pina
+segg
+seggfej
+segglyuk
+csicska
+ribanc
+lotyó
+parázna
+# endregion ISERO PATCH profanity-pack-hu
