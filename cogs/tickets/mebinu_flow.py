@@ -118,15 +118,15 @@ async def start_flow(cog, interaction) -> bool:
             pass
         return True
 
-    use_agent = (os.getenv("MEBINU_USE_AGENT", "true").lower() == "true")
+    use_agent = os.getenv("MEBINU_USE_AGENT", "true").lower() == "true"
+    show_legacy = os.getenv("MEBINU_LEGACY_HINT_VISIBLE", "false").lower() == "true"
     if use_agent:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
-        allowed = set(
-            str(x).strip()
-            for x in (os.getenv("AGENT_ALLOWED_CHANNELS", "") or "").split(",")
-            if x.strip()
-        )
-        if agent and (not allowed or str(ch.id) in allowed):
+        if agent:
+            if getattr(agent, "sessions", {}).get(ch.id):
+                if show_legacy:
+                    await interaction.response.send_message("ISERO már aktív ebben a ticketben. 😊 Folytassuk a részletekkel!")
+                return True
             kb = getattr(cog, "kb", {}) or {}
             sys = compose_mebinu_prompt(cog.bot, ch, interaction.user, kb)
             try:
@@ -137,9 +137,8 @@ async def start_flow(cog, interaction) -> bool:
                     ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
                 )
                 await interaction.response.send_message(
-                    "ISERO bekapcsolt. Kezdjük! \U0001f609 Mondd, milyen Mebinut képzelsz el elsőnek?"
+                    "Oké, nézzük meg együtt! 😊 Röviden: milyen hangulatú/ruhájú Mebinut szeretnél elsőnek?"
                 )
-                # rögzítjük a ticket-opener ID-t, hogy a beszélgetésből jeleket mentsünk
                 try:
                     cog.mebinu_agent_openers
                 except AttributeError:
@@ -147,8 +146,13 @@ async def start_flow(cog, interaction) -> bool:
                 cog.mebinu_agent_openers[ch.id] = interaction.user.id
                 return True
             except Exception:
-                pass
-    # ha az agent valamiért nem indul, a meglévő (fallback) út marad
+                await interaction.response.send_message(
+                    "Bekapcsoltam. Írd le egy mondatban, mit szeretnél, és kérdezek lépésenként. ✍️"
+                )
+                return True
+    if not show_legacy:
+        await interaction.response.send_message("Írd le röviden az elképzelést, és végigkérdezlek lépésenként. 😉")
+        return True
     session = MebinuSession()
     async for m in ch.history(limit=1, before=interaction.created_at):
         if m.author.id == interaction.user.id:

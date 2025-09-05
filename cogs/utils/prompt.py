@@ -40,54 +40,27 @@ def _player_snapshot(bot, user_id: int) -> str:
         return ""
 
 def compose_mebinu_prompt(bot, channel: discord.TextChannel, opener: discord.Member, kb: dict | None) -> str:
-    """Dinamikus rendszerprompt Mebinu tickethez (csatorna + user + KB + árképzés)."""
-    # környezeti árak/szabályok
-    base  = os.getenv("MEBINU_BASE_PRICE_USD", "30")
-    bulkn = os.getenv("MEBINU_BULK_MIN_QTY", "4")
-    bulko = os.getenv("MEBINU_BULK_OFF_USD", "5")
+    """Mebinu értékesítő persona: NEM listáz, barátságos, egy kérdés/kör."""
     sla_d = os.getenv("TICKET_DEFAULT_SLA_DAYS", "3")
-
     cat = getattr(channel, "category", None)
     cat_name = cat.name if cat else "—"
-    meta_ch = f"Channel: {cat_name} / #{channel.name} ({_nsfw(channel)})"
+    meta_ch = f"Channel: {cat_name} / #{channel.name}"
     meta_user = f"User: {opener.display_name} • Roles: {_roles_str(opener)}"
-    meta_pc = _player_snapshot(bot, opener.id)
-    if meta_pc:
-        meta_user += f" • PlayerCard: {meta_pc}"
-
-    # tudásbázis kivonat (rövid, tokenbarát)
-    facts = ""
-    variants = ""
-    closes = ""
-    if kb:
-        meb = kb.get("mebinu") or {}
-        if isinstance(meb.get("facts"), list):
-            facts = "Facts: " + " | ".join(meb["facts"][:6])
-        elif isinstance(meb.get("facts"), str):
-            facts = "Facts: " + meb["facts"][:400]
-        if isinstance(meb.get("variants"), list):
-            variants = "Variants: " + ", ".join(meb["variants"][:5])
-        if isinstance(meb.get("closing_lines"), list):
-            closes = "Closing cues: " + " || ".join(meb["closing_lines"][:2])
-
+    pc = _player_snapshot(bot, opener.id)
+    if pc:
+        meta_user += f" • PlayerCard: {pc}"
     persona = (
-        "You are ISERO, a witty, sales-savvy Discord agent for custom Mebinu characters. "
-        "Goal: close the sale politely and upsell gently if feasible. "
-        "Hard rules: reply in the user's language; keep messages 1–3 sentences; ask exactly one focused question per turn; "
-        f"pricing: ${base} per Mebinu, {bulkn}+ → -${bulko} each; typical turnaround ≈ {sla_d} days. "
-        "Detect quantity/budget/style hints; confirm and move forward; never dump a list of questions."
+        "You are ISERO, a friendly, sales-savvy assistant for *Mebinu* character orders."
+        "\nRules:" 
+        "\n• Ask exactly one focused question per turn (1–2 sentences)."
+        "\n• Warm, playful tone; reply in user's language."
+        "\n• Extract: variant/figure, colors & vibe, quantity, deadline, budget, refs."
+        "\n• Subtle upsell if user seems open; never pushy."
+        "\n• Never list multiple questions or mention internal limits."
+        f"\n• Typical turnaround ≈ {sla_d} days; confirm expectations." 
+        "\nStart with a single welcoming question tailored to what the user said."
     )
-
-    lines = [
-        persona,
-        meta_ch,
-        meta_user,
-        (facts or "Facts: —"),
-        (variants or "Variants: —"),
-        (closes or "Closing cues: —"),
-        "If user greets, greet shortly and ask the first clarifying question.",
-    ]
-    return "\n".join(lines)
+    return "\n".join([persona, meta_ch, meta_user])
 # endregion ISERO PATCH prompt-composer
 
 # region ISERO PATCH commission-prompt
