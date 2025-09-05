@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List
 import discord
+from ..utils.prompt import compose_mebinu_prompt
 
 MAX_TURNS = 10
 
@@ -85,13 +86,8 @@ async def start_flow(cog, interaction) -> bool:
             if x.strip()
         )
         if agent and (not allowed or str(ch.id) in allowed):
-            sys = (
-                "You are ISERO, a witty, sales-savvy Discord agent. "
-                "Goal: close the sale for Mebinu customs politely, upsell gently. "
-                "Keep replies 1–3 sentences. Ask exactly one focused question each turn. "
-                "Pricing: $30 per Mebinu, 4+ → -$5 each. SLA ≈ 3 days. "
-                "Detect budget/quantity/style hints; confirm and move forward."
-            )
+            kb = getattr(cog, "kb", {}) or {}
+            sys = compose_mebinu_prompt(cog.bot, ch, interaction.user, kb)
             try:
                 await agent.start_session(
                     channel=ch,
@@ -100,7 +96,7 @@ async def start_flow(cog, interaction) -> bool:
                     ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
                 )
                 await interaction.response.send_message(
-                    "ISERO bekapcsolt. Kezdjük a briefet! \U0001f609 Mi lenne az első elképzelésed?"
+                    "ISERO bekapcsolt. Kezdjük! \U0001f609 Mondd, milyen Mebinut képzelsz el elsőnek?"
                 )
                 return True
             except Exception:
