@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from typing import List
 import discord
 import re
+from discord.ext import commands
 from ..utils.prompt import compose_mebinu_prompt
+from ..utils.sales import calc_total, env_prices
 
 MAX_TURNS = 10
 
@@ -153,3 +155,29 @@ async def start_flow(cog, interaction) -> bool:
     # endregion ISERO PATCH agent-first
     return True
 # endregion ISERO PATCH MEBINU_DIALOG_V1
+
+# region ISERO PATCH mebinu-offer-cmd
+@commands.hybrid_command(name="offer", description="Gyors ajánlat Mebinura (db × ár, kedvezménnyel).")
+async def offer(ctx: commands.Context, qty: int | None = None):
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.reply("Csak csatornában használható.")
+    if qty is None:
+        qty = 1
+        if os.getenv("PLAYER_CARD_ENABLED", "false").lower() == "true":
+            pcog = ctx.bot.get_cog("PlayerDB")
+            if pcog and hasattr(pcog, "get_snapshot"):
+                try:
+                    snap = pcog.get_snapshot(ctx.author.id) or {}
+                    qty = int(snap.get("last_qty") or qty)
+                except Exception:
+                    pass
+    unit, bulk_min, off_each = env_prices()
+    sub, disc, total = calc_total(unit, qty, bulk_min, off_each)
+    txt = (f"Ajánlat: **{qty}× ${unit:.0f}** = ${sub:.2f}" +
+           (f" • Kedvezmény: −${disc:.2f}" if disc > 0 else "") +
+           f" → **Végösszeg: ${total:.2f}**  ( {bulk_min}+ darabnál −${off_each:.0f}/db )")
+    try:
+        await ctx.reply(txt)
+    except Exception:
+        await ctx.send(txt)
+# endregion ISERO PATCH mebinu-offer-cmd

@@ -17,22 +17,24 @@ def _roles_str(member: discord.Member) -> str:
         return "—"
 
 def _player_snapshot(bot, user_id: int) -> str:
-    if (os.getenv("PLAYER_CARD_ENABLED", "false").lower() != "true"):
+    if os.getenv("PLAYER_CARD_ENABLED", "false").lower() != "true":
         return ""
-    ag = getattr(bot, "get_cog", lambda _n: None)("AgentGate")
-    pcog = getattr(ag, "db", None)
+    pcog = getattr(bot, "get_cog", lambda _n: None)("PlayerDB")
     if not pcog or not hasattr(pcog, "get_snapshot"):
         return ""
     try:
         snap = pcog.get_snapshot(user_id) or {}
         mood = snap.get("mood") or "neutral"
-        qty  = snap.get("last_qty")
+        qty = snap.get("last_qty")
         style = snap.get("last_style")
         budget = snap.get("last_budget")
         bits = [f"mood:{mood}"]
-        if qty:    bits.append(f"last_qty:{qty}")
-        if style:  bits.append(f"last_style:{style}")
-        if budget: bits.append(f"last_budget:{budget}")
+        if qty:
+            bits.append(f"last_qty:{qty}")
+        if style:
+            bits.append(f"last_style:{style}")
+        if budget:
+            bits.append(f"last_budget:{budget}")
         return "; ".join(bits)
     except Exception:
         return ""
@@ -53,14 +55,20 @@ def compose_mebinu_prompt(bot, channel: discord.TextChannel, opener: discord.Mem
     if meta_pc:
         meta_user += f" • PlayerCard: {meta_pc}"
 
-    # tudásbázis kivonat (rövid, hogy tokenbarát legyen)
+    # tudásbázis kivonat (rövid, tokenbarát)
     facts = ""
+    variants = ""
+    closes = ""
     if kb:
-        meb = (kb.get("mebinu") or {})
+        meb = kb.get("mebinu") or {}
         if isinstance(meb.get("facts"), list):
             facts = "Facts: " + " | ".join(meb["facts"][:6])
         elif isinstance(meb.get("facts"), str):
             facts = "Facts: " + meb["facts"][:400]
+        if isinstance(meb.get("variants"), list):
+            variants = "Variants: " + ", ".join(meb["variants"][:5])
+        if isinstance(meb.get("closing_lines"), list):
+            closes = "Closing cues: " + " || ".join(meb["closing_lines"][:2])
 
     persona = (
         "You are ISERO, a witty, sales-savvy Discord agent for custom Mebinu characters. "
@@ -75,6 +83,8 @@ def compose_mebinu_prompt(bot, channel: discord.TextChannel, opener: discord.Mem
         meta_ch,
         meta_user,
         (facts or "Facts: —"),
+        (variants or "Variants: —"),
+        (closes or "Closing cues: —"),
         "If user greets, greet shortly and ask the first clarifying question.",
     ]
     return "\n".join(lines)
