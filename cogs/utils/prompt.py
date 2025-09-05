@@ -123,3 +123,37 @@ def compose_commission_prompt(bot, channel: discord.TextChannel, opener: discord
              "If user greets, greet shortly and ask what they need: images or videos (or both)."]
     return "\n".join(lines)
 # endregion ISERO PATCH commission-prompt
+
+# region ISERO PATCH general-prompt
+def compose_general_prompt(bot, channel: discord.TextChannel, opener: discord.Member, kb: dict | None) -> str:
+    sla_d = os.getenv("TICKET_DEFAULT_SLA_DAYS", "3")
+    cat = getattr(channel, "category", None)
+    cat_name = cat.name if cat else "—"
+    meta_ch = f"Channel: {cat_name} / #{channel.name} ({_nsfw(channel)})"
+    meta_user = f"User: {opener.display_name} • Roles: {_roles_str(opener)}"
+    pc = _player_snapshot(bot, opener.id)
+    if pc:
+        meta_user += f" • PlayerCard: {pc}"
+    facts = ""; closes = ""; qs = []
+    if kb:
+        gh = kb.get("general") or {}
+        if isinstance(gh.get("facts"), list):
+            facts = "Facts: " + " | ".join(gh["facts"][:6])
+        if isinstance(gh.get("closing_lines"), list):
+            closes = "Closing cues: " + " || ".join(gh["closing_lines"][:2])
+        if isinstance(gh.get("questions"), list):
+            qs = gh["questions"][:4]
+    persona = (
+        "You are ISERO, a concise, helpful support agent for General Help tickets. "
+        "Goal: triage the issue and collect minimal reproducible details, then confirm next steps. "
+        "Keep replies 1–3 sentences; ask exactly one focused question each turn; reply in user's language. "
+        f"Typical turnaround ≈ {sla_d} days; escalate if critical."
+    )
+    lines = [persona, meta_ch, meta_user, (facts or "Facts: —"), (closes or "Closing cues: —")]
+    if qs:
+        lines.append("Start by asking: " + qs[0])
+    else:
+        lines.append('Start by asking: "Mi a probléma röviden?"')
+    return "\n".join(lines)
+# endregion ISERO PATCH general-prompt
+

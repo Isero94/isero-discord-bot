@@ -2,6 +2,7 @@ from discord.ext import commands
 import discord, os, datetime as dt
 from ..utils.prompt import compose_commission_prompt
 from ..utils.sales import calc_images, calc_videos
+from .general_flow import _is_nsfw_env
 
 # region ISERO PATCH commission-flow
 class CommissionFlow(commands.Cog):
@@ -15,7 +16,13 @@ class CommissionFlow(commands.Cog):
                 await tickets.ensure_ticket_perms(channel, opener)
             if hasattr(tickets, "post_welcome_and_sla"):
                 await tickets.post_welcome_and_sla(channel, "commission", opener)
-        use_agent = (os.getenv("COMMISSION_USE_AGENT", "true").lower() == "true")
+        if _is_nsfw_env(channel) or os.getenv("NSFW_AGENT_ENABLED", "true").lower() == "false":
+            try:
+                await channel.send(os.getenv("NSFW_SAFE_MODE_TEXT", "NSFW safe-mode: írd le a kérésed és csatolj referenciát."))
+            except Exception:
+                pass
+            return
+        use_agent = os.getenv("COMMISSION_USE_AGENT", "true").lower() == "true"
         if not use_agent:
             return
         agent = getattr(self.bot, "get_cog", lambda _n: None)("AgentGate")
@@ -28,7 +35,7 @@ class CommissionFlow(commands.Cog):
                 channel=channel,
                 system_prompt=sys,
                 prefer_heavy=True,
-                ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS","120") or "120"),
+                ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
             )
             await channel.send("ISERO bekapcsolt. Képeket vagy videókat szeretnél első körben?")
         except Exception:

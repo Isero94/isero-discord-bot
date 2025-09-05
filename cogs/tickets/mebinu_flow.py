@@ -10,6 +10,7 @@ import datetime as dt
 from discord.ext import commands
 from ..utils.prompt import compose_mebinu_prompt
 from ..utils.sales import calc_total, env_prices
+from .general_flow import _is_nsfw_env
 
 MAX_TURNS = 10
 
@@ -110,6 +111,12 @@ async def start_flow(cog, interaction) -> bool:
         await cog.ensure_ticket_perms(ch, interaction.user)
     if hasattr(cog, "post_welcome_and_sla"):
         await cog.post_welcome_and_sla(ch, "mebinu", interaction.user)
+    if _is_nsfw_env(ch) or os.getenv("NSFW_AGENT_ENABLED", "true").lower() == "false":
+        try:
+            await ch.send(os.getenv("NSFW_SAFE_MODE_TEXT", "NSFW safe-mode: írd le a kérésed és csatolj referenciát."))
+        except Exception:
+            pass
+        return True
 
     use_agent = (os.getenv("MEBINU_USE_AGENT", "true").lower() == "true")
     if use_agent:
