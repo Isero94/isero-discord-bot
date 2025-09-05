@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
-from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow, extract_signals
 from cogs.utils.ticket_kb import load_ticket_kb
 from utils.text import truncate_by_chars
 
@@ -202,6 +202,9 @@ class TicketsCog(commands.Cog):
         self.last_open: dict[int, float] = {}   # cooldown map
         self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
         self.mebinu_sessions: dict[int, MebinuSession] = {}
+        # region ISERO PATCH agent-sessions
+        self.mebinu_agent_openers: dict[int, int] = {}
+        # endregion
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
@@ -515,6 +518,28 @@ class TicketsCog(commands.Cog):
                 )
                 self.mebinu_sessions.pop(ch.id, None)
             return
+
+        # region ISERO PATCH mebinu-agent-signal
+        opener_id = self.mebinu_agent_openers.get(ch.id)
+        if opener_id and message.author.id == opener_id and message.content:
+            qty, budget, style = extract_signals(message.content)
+            if qty is not None or budget is not None or style is not None:
+                if os.getenv("PLAYER_CARD_ENABLED", "false").lower() == "true":
+                    ag = self.bot.get_cog("AgentGate")
+                    pcog = getattr(ag, "db", None)
+                    if pcog and hasattr(pcog, "set_fields"):
+                        updates = {}
+                        if qty is not None:
+                            updates["last_qty"] = qty
+                        if budget is not None:
+                            updates["last_budget"] = budget
+                        if style is not None:
+                            updates["last_style"] = style
+                        try:
+                            await pcog.set_fields(message.author.id, **updates)
+                        except Exception:
+                            pass
+        # endregion
 
         # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()
