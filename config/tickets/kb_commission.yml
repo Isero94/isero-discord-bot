@@ -1,36 +1,43 @@
+# region ISERO PATCH kb-commission
 name: "Commission"
-images:
-  base_price_usd: 6
-  bulk_discount:
-    min_qty: 4
-    off_per_item_usd: 1
-  hq_4k_price_usd: 10
-  value_explain: >
-    A jó minőséghez több próbálkozás, relighting és finomhangolás kell.
-videos:
-  unit_seconds: 5
-  unit_price_usd: 20
-  bulk_discount:
-    min_qty: 4
-    off_per_item_usd: 5
-  rationale: >
-    A megfelelő kliphez több generálás kell; az első output ritkán tökéletes.
-packages:
-  - name: "Avatar SFX / animated avatar"
-    price_from_usd: 49.99
-  - name: "Influencer/model (pose, lipsync, dance)"
-    price_from_usd: 79.99
-    price_to_usd: 129.99
-  - name: "Product promo / brand content"
-    price_from_usd: 149.99
-    price_to_usd: 249.99
+what_is_it: >
+  Egyedi képek és videók megrendelése (nem adoptable). A képek magas felbontású PNG-k,
+  a videók rövid AI-klippek (több iterációval válogatva). Árazás mennyiségtől és hossz­tól függ.
+pricing:
+  image:
+    unit_usd: 6
+    bulk_discount:
+      min_qty: 4
+      off_per_item_usd: 1
+  video:
+    price_per_5s_usd: 20
+    bulk_discount:
+      min_videos: 4
+      off_per_video_usd: 5
+  packages:
+    - name: "SFX Avatar video"
+      from_usd: 49.99
+    - name: "Influencer/model (pose/lipsync/dance)"
+      from_usd: 79.99
+      to_usd: 129.99
+    - name: "Product promo (script+logo+closeups)"
+      from_usd: 149.99
+      to_usd: 249.99
 questions:
-  - "Mi a cél (profilkép, poszt, kampány, merch)?"
-  - "Stílus és referencia link/fájl?"
-  - "Felbontás/arány (négyzet, 9:16, 16:9)?"
-  - "Határidő (default 3 nap) és költségkeret?"
-system_prompt: |
-  You are ISERO, a commission agent. Qualify the scope, propose options with
-  clear prices. For images: $6 each; 4+ → $1 off each; HQ 4k at $10 each.
-  For video: $20 per 5s; 4+ videos → $5 off each. Explain production effort.
-  If user pushes price unrealistically low, defend creator value politely.
+  - "Képeket vagy videókat szeretnél? (vagy mindkettőt)"
+  - "Stílus/téma? (pl. gamer, neon, angel/demon, brand színek)"
+  - "Hány darab képet/videót képzelsz el?"
+  - "Videónál hány másodperc/videó a cél?"
+  - "Keret (HUF/EUR/USD)?"
+facts:
+  - "Kép: nagy felbontású PNG, prompt jegyzet kérhető."
+  - "Videó: 5 mp-es egységekben számolunk a minőség miatt."
+  - "Alap átfutás ≈ 3 nap (sorfüggő)."
+objections:
+  - cue: "drága|expensive|too much"
+    say: "A jó minőséghez iterációk kellenek — ez benne van az árban; 4+ tételnél automatikus kedvezmény jár."
+  - cue: "siet|urgent|rush"
+    say: "Megpróbálom előrevenni; jelzek reális céldátumot. Ha több tételt választasz, párhuzamosítok."
+closing_lines:
+  - "Kezdjünk 2 képpel és 1 rövid (10 mp) klippel — így gyorsan látod a look&feel-t; 4+ tételnél már jön a kedvezmény."
+# endregion ISERO PATCH kb-commission
