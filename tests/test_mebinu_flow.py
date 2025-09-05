@@ -56,7 +56,7 @@ def test_old_template_disabled():
 
     asyncio.run(run())
     assert sent and "alcsomag" not in sent[0]
-    assert "[3/5]" in sent[0]
+    assert "[3/5]" not in sent[0]
 
 
 def test_old_template_when_flag_off():
