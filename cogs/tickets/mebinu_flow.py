@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List
 import discord
+import re
 from ..utils.prompt import compose_mebinu_prompt
 
 MAX_TURNS = 10
@@ -16,6 +17,34 @@ QUESTIONS = [
     "Mekkora a keret? (HUF/EUR)",
     "Van 1–4 referencia képed? (írj: igen/nem)",
 ]
+
+# region ISERO PATCH signal-regex
+_RE_QTY = re.compile(r"(?:\b|#)(\d{1,2})\s*(?:db|darab|pcs?)?\b", re.IGNORECASE)
+_RE_BUDGET = re.compile(r"(\d{1,5})(?:\s?[-–]?\s?(?:usd|eur|huf|ft|\$|€))", re.IGNORECASE)
+_RE_STYLE = re.compile(r"\b(piros|vörös|kék|zöld|lila|rózsaszín|fekete|fehér|arany|ezüst|pastel|pastell|angel|démon|dark|cute|kawaii)\b", re.IGNORECASE)
+
+
+def extract_signals(text: str):
+    qty = None
+    m = _RE_QTY.search(text)
+    if m:
+        try:
+            n = int(m.group(1))
+            if 1 <= n <= 99:
+                qty = n
+        except Exception:
+            pass
+    budget = None
+    m = _RE_BUDGET.search(text)
+    if m:
+        try:
+            budget = int(m.group(1))
+        except Exception:
+            pass
+    styles = [sm.group(1).lower() for sm in _RE_STYLE.finditer(text)]
+    style = ", ".join(dict.fromkeys(styles)) if styles else None
+    return qty, budget, style
+# endregion
 
 
 @dataclass
@@ -98,6 +127,12 @@ async def start_flow(cog, interaction) -> bool:
                 await interaction.response.send_message(
                     "ISERO bekapcsolt. Kezdjük! \U0001f609 Mondd, milyen Mebinut képzelsz el elsőnek?"
                 )
+                # rögzítjük a ticket-opener ID-t, hogy a beszélgetésből jeleket mentsünk
+                try:
+                    cog.mebinu_agent_openers
+                except AttributeError:
+                    cog.mebinu_agent_openers = {}
+                cog.mebinu_agent_openers[ch.id] = interaction.user.id
                 return True
             except Exception:
                 pass

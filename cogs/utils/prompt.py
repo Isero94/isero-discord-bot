@@ -19,7 +19,8 @@ def _roles_str(member: discord.Member) -> str:
 def _player_snapshot(bot, user_id: int) -> str:
     if (os.getenv("PLAYER_CARD_ENABLED", "false").lower() != "true"):
         return ""
-    pcog = getattr(bot, "get_cog", lambda _n: None)("PlayerDB")
+    ag = getattr(bot, "get_cog", lambda _n: None)("AgentGate")
+    pcog = getattr(ag, "db", None)
     if not pcog or not hasattr(pcog, "get_snapshot"):
         return ""
     try:
