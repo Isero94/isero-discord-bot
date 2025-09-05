@@ -17,6 +17,15 @@ MAX_TURNS = 10
 
 log = logging.getLogger("ISERO.Mebinu")
 
+# region ISERO PATCH legacy-flags
+def _envb(name: str, default: str = "false") -> bool:
+    return str(os.getenv(name, default)).strip().lower() in ("1", "true", "yes", "on")
+
+_SUPPRESS_ALWAYS = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
+_LEGACY_VISIBLE = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
+_LEGACY_ENABLED = (_LEGACY_VISIBLE and not _SUPPRESS_ALWAYS)
+# endregion
+
 QUESTIONS = [
     "Melyik termék vagy variáns érdekel?",
     "Milyen stílus/színvilág tetszik? (adj példát)",
@@ -147,8 +156,8 @@ async def start_flow(cog, interaction) -> bool:
         return True
 
     use_agent = os.getenv("MEBINU_USE_AGENT", "true").lower() == "true"
-    show_legacy = os.getenv("MEBINU_LEGACY_HINT_VISIBLE", "false").lower() == "true"
-    suppress_always = os.getenv("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true").lower() == "true"
+    show_legacy = _LEGACY_VISIBLE
+    suppress_always = _SUPPRESS_ALWAYS
     if use_agent:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
         if agent:

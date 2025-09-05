@@ -241,6 +241,18 @@ class TicketsCog(commands.Cog):
             self.mod_logs_id = 0
         # endregion
 
+        # region ISERO PATCH legacy-flags
+        def _envb(name: str, default: str = "false") -> bool:
+            return str(os.getenv(name, default)).strip().lower() in ("1", "true", "yes", "on")
+        self._suppress_always = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
+        self._legacy_visible = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
+        self._legacy_enabled = (self._legacy_visible and not self._suppress_always)
+        self._legacy_keys = (
+            "Melyik termék vagy téma?", "Mennyiség, ritkaság, színvilág?", "Határidő", "Keret (HUF/EUR)?",
+            "Van 1-4 referencia kép?", "max 800", "Which product/variant", "quantity", "deadline", "budget", "reference image",
+        )
+        # endregion
+
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
         e = discord.Embed(title="Ticket Hub")
@@ -557,28 +569,49 @@ class TicketsCog(commands.Cog):
     # --------- Message listener ---------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
+        if not message.guild:
             return
 
-        # region ISERO PATCH kill-legacy-hints
-        agent = self.bot.get_cog("AgentGate") if self.bot else None
-        if agent and hasattr(agent, "is_active") and agent.is_active(message.channel.id):
+        ch = message.channel
+
+        # region ISERO PATCH legacy-sweeper (bot messages)
+        if message.author.bot:
             try:
-                async for m in message.channel.history(limit=6):
-                    if not m.author.bot:
-                        continue
-                    txt = (m.content or "").lower()
-                    if any(k in txt for k in ("melyik termék vagy téma", "max 800", "keret (huf/eur)")):
-                        try:
-                            await m.delete()
-                        except Exception:
-                            pass
+                if isinstance(ch, discord.TextChannel) and hasattr(ch, "topic") and "type=mebinu" in (ch.topic or ""):
+                    gate = self.bot.get_cog("AgentGate")
+                    if (not self._legacy_enabled) or (gate and getattr(gate, "is_active", lambda _ch: False)(ch.id)):
+                        txt = (message.content or "")
+                        if any(k in txt for k in self._legacy_keys):
+                            try:
+                                await message.delete()
+                                self.log.info("Legacy prompt auto-removed msg_id=%s in #%s", message.id, ch.id)
+                            except Exception:
+                                pass
             except Exception:
                 pass
+            return
+        # endregion
+
+        # region ISERO PATCH kill-legacy-hints
+        if isinstance(ch, discord.TextChannel) and hasattr(ch, "topic") and "type=mebinu" in (ch.topic or ""):
+            gate = self.bot.get_cog("AgentGate")
+            if (not self._legacy_enabled) or (gate and getattr(gate, "is_active", lambda _ch: False)(ch.id)):
+                try:
+                    async for m in ch.history(limit=6):
+                        if not m.author.bot:
+                            continue
+                        txt = (m.content or "")
+                        if any(k in txt for k in self._legacy_keys):
+                            try:
+                                await m.delete()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                return
         # endregion
 
         # 1) SELF-FLOW képfogás
-        ch = message.channel
         if isinstance(ch, discord.TextChannel) and ch.id in self.pending:
             st = self.pending[ch.id]
             owner_id = st.get("owner_id")
