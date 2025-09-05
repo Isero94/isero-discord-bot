@@ -103,6 +103,8 @@ async def start_flow(cog, interaction) -> bool:
     """Start guided Mebinu flow; return True if started."""
     ch = interaction.channel
     # region ISERO PATCH agent-first
+    if hasattr(cog, "ensure_ticket_perms"):
+        await cog.ensure_ticket_perms(ch, interaction.user)
     if hasattr(cog, "post_welcome_and_sla"):
         await cog.post_welcome_and_sla(ch, "mebinu", interaction.user)
 
