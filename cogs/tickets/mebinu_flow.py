@@ -101,6 +101,23 @@ async def _sweep_legacy(channel: discord.TextChannel):
     await _purge_legacy_block(channel)
 
 
+async def strip_legacy_bot_message(bot, message: discord.Message):
+    """Remove legacy prompt blocks sent by bots if agent is active or legacy disabled."""
+    if not message.author.bot:
+        return
+    ch = message.channel
+    if not isinstance(ch, discord.TextChannel):
+        return
+    if _SUPPRESS_ALWAYS or _agent_active(bot, ch.id):
+        txt = message.content or ""
+        if any(k in txt for k in LEGACY_KEYS):
+            try:
+                await message.delete()
+                log.info("Legacy prompt auto-removed msg_id=%s in #%s", message.id, ch.id)
+            except Exception:
+                pass
+
+
 @dataclass
 class MebinuSession:
     created: float = field(default_factory=time.time)

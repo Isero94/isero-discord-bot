@@ -13,7 +13,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
-from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow, extract_signals
+from cogs.tickets.mebinu_flow import (
+    MebinuSession,
+    QUESTIONS,
+    start_flow,
+    extract_signals,
+    strip_legacy_bot_message,
+)
 from cogs.utils.ticket_kb import load_ticket_kb
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
@@ -578,16 +584,7 @@ class TicketsCog(commands.Cog):
         # region ISERO PATCH legacy-sweeper (bot messages)
         if message.author.bot:
             try:
-                if isinstance(ch, discord.TextChannel) and hasattr(ch, "topic") and "type=mebinu" in (ch.topic or ""):
-                    gate = self.bot.get_cog("AgentGate")
-                    if (not self._legacy_enabled) or (gate and getattr(gate, "is_active", lambda _ch: False)(ch.id)):
-                        txt = (message.content or "")
-                        if any(k in txt for k in self._legacy_keys):
-                            try:
-                                await message.delete()
-                                self.log.info("Legacy prompt auto-removed msg_id=%s in #%s", message.id, ch.id)
-                            except Exception:
-                                pass
+                await strip_legacy_bot_message(self.bot, message)
             except Exception:
                 pass
             return
