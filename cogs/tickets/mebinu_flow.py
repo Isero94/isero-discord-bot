@@ -72,33 +72,51 @@ class MebinuSession:
 async def start_flow(cog, interaction) -> bool:
     """Start guided Mebinu flow; return True if started."""
     ch = interaction.channel
+    # region ISERO PATCH agent-first
+    if hasattr(cog, "post_welcome_and_sla"):
+        await cog.post_welcome_and_sla(ch, "mebinu", interaction.user)
+
+    use_agent = (os.getenv("MEBINU_USE_AGENT", "true").lower() == "true")
+    if use_agent:
+        agent = cog.bot.get_cog("AgentGate") if cog.bot else None
+        allowed = set(
+            str(x).strip()
+            for x in (os.getenv("AGENT_ALLOWED_CHANNELS", "") or "").split(",")
+            if x.strip()
+        )
+        if agent and (not allowed or str(ch.id) in allowed):
+            sys = (
+                "You are ISERO, a witty, sales-savvy Discord agent. "
+                "Goal: close the sale for Mebinu customs politely, upsell gently. "
+                "Keep replies 1–3 sentences. Ask exactly one focused question each turn. "
+                "Pricing: $30 per Mebinu, 4+ → -$5 each. SLA ≈ 3 days. "
+                "Detect budget/quantity/style hints; confirm and move forward."
+            )
+            try:
+                await agent.start_session(
+                    channel=ch,
+                    system_prompt=sys,
+                    prefer_heavy=True,
+                    ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
+                )
+                await interaction.response.send_message(
+                    "ISERO bekapcsolt. Kezdjük a briefet! \U0001f609 Mi lenne az első elképzelésed?"
+                )
+                return True
+            except Exception:
+                pass
+    # ha az agent valamiért nem indul, a meglévő (fallback) út marad
     session = MebinuSession()
     async for m in ch.history(limit=1, before=interaction.created_at):
         if m.author.id == interaction.user.id:
             session.prefill(m.content)
             break
-    # region ISERO PATCH mebinu-welcome-agent
     cog.mebinu_sessions[ch.id] = session
-    if hasattr(cog, "post_welcome_and_sla"):
-        await cog.post_welcome_and_sla(ch, "mebinu", interaction.user)
-
-    kb = (getattr(cog, "kb", {}) or {}).get("mebinu", {})
-    sys = kb.get("system_prompt", "")
-    questions = "\n".join(f"- {q}" for q in kb.get("questions", []))
-    sales_boot = f"{sys}\n\nStart by asking:\n{questions}\n"
-    agent = cog.bot.get_cog("AgentGate") if cog.bot else None
-    allowed = set(str(x).strip() for x in (os.getenv("AGENT_ALLOWED_CHANNELS", "") or "").split(",") if x.strip())
-    if agent and (not allowed or str(ch.id) in allowed):
-        try:
-            await agent.start_session(channel=ch, system_prompt=sales_boot, prefer_heavy=True, ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"))
-        except Exception:
-            pass
-
     q = session.next_question()
     await interaction.response.send_message(
         f"{interaction.user.mention} {q} [{session.step+1}/{len(QUESTIONS)}]",
         allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
     )
-    # endregion ISERO PATCH mebinu-welcome-agent
+    # endregion ISERO PATCH agent-first
     return True
 # endregion ISERO PATCH MEBINU_DIALOG_V1
