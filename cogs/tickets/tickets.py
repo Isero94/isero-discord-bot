@@ -6,20 +6,19 @@ import asyncio
 import typing as T
 import os
 import datetime as dt
+import logging
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from bot.config import settings
-from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow
+from cogs.tickets.mebinu_flow import MebinuSession, QUESTIONS, start_flow, extract_signals
 from cogs.utils.ticket_kb import load_ticket_kb
-from utils.text import truncate_by_chars
 
 TICKET_HUB_CHANNEL_ID = settings.CHANNEL_TICKET_HUB
 TICKETS_CATEGORY_ID   = settings.CATEGORY_TICKETS
 ARCHIVE_CATEGORY_ID   = settings.ARCHIVE_CATEGORY_ID
-STAFF_ROLE_ID         = settings.STAFF_ROLE_ID
 TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
 NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
@@ -202,6 +201,9 @@ class TicketsCog(commands.Cog):
         self.last_open: dict[int, float] = {}   # cooldown map
         self.pending: dict[int, dict[str, T.Any]] = {}  # ch_id -> {owner_id, desc, left}
         self.mebinu_sessions: dict[int, MebinuSession] = {}
+        # region ISERO PATCH agent-sessions
+        self.mebinu_agent_openers: dict[int, int] = {}
+        # endregion
         # persistent views
         self.bot.add_view(OpenTicketView(self))
         self.bot.add_view(CloseTicketView(self))
@@ -213,6 +215,31 @@ class TicketsCog(commands.Cog):
             self.kb = {}
         self.default_sla_days = int(os.getenv("TICKET_DEFAULT_SLA_DAYS", "3") or "3")
         # endregion ISERO PATCH ticket-kb-init
+        # region ISERO PATCH ticket-perms/init
+        self.log = logging.getLogger("ISERO.Tickets")
+        try:
+            self.staff_role_id = int(os.getenv("STAFF_ROLE_ID", "0") or "0")
+        except Exception:
+            self.staff_role_id = 0
+        extras = [x.strip() for x in (os.getenv("STAFF_EXTRA_ROLE_IDS", "") or "").split(",") if x.strip()]
+        self.staff_extra_role_ids = []
+        for x in extras:
+            try:
+                self.staff_extra_role_ids.append(int(x))
+            except Exception:
+                pass
+        # endregion
+
+        # region ISERO PATCH order-log/init
+        try:
+            self.mod_queue_id = int(os.getenv("CHANNEL_MOD_QUEUE", "0") or "0")
+        except Exception:
+            self.mod_queue_id = 0
+        try:
+            self.mod_logs_id = int(os.getenv("CHANNEL_MOD_LOGS", "0") or "0")
+        except Exception:
+            self.mod_logs_id = 0
+        # endregion
 
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
@@ -247,22 +274,96 @@ class TicketsCog(commands.Cog):
 
     # region ISERO PATCH post-welcome
     async def post_welcome_and_sla(self, channel: discord.TextChannel, kind: str, opener: discord.Member):
-        kb = (self.kb or {}).get(kind, {})
-        now = dt.datetime.utcnow()
-        due = now + dt.timedelta(days=self.default_sla_days)
-        due_unix = int(due.timestamp())
-        title = f"{kb.get('name', kind.replace('-', ' ').title())} Ticket"
-        desc = truncate_by_chars(kb.get('instructions') or kb.get('system_prompt') or '', 1000)
-        embed = discord.Embed(title=title, description=desc, color=0x5FBF7F)
-        embed.add_field(name="SLA (puha határidő)", value=f"<t:{due_unix}:R> (≈ {self.default_sla_days} nap)", inline=False)
-        send = getattr(channel, "send", None)
-        if not callable(send):
-            return
+        """Küld egy üdvözlő embedet és jelzi a ~3 napos (env) céldátumot."""
+        await self.ensure_ticket_perms(channel, opener)
         try:
-            await send(content=f"{opener.mention}", embed=embed)
-        except Exception:
-            await send(embed=embed)
+            now = dt.datetime.utcnow()
+            due = now + dt.timedelta(days=self.default_sla_days)
+            due_str = due.strftime("%Y-%m-%d %H:%M UTC")
+            e = discord.Embed(
+                title=f"Welcome — {kind.capitalize()}",
+                description=(
+                    f"Szia {opener.mention}! Ez egy privát ticket csatorna.\n\n"
+                    f"**Céldátum (≈ puha határidő):** {due_str}\n"
+                    f"Írj rövid leírást, vagy kattints a gombra, hogy **ISERO** vezesse a beszélgetést."
+                ),
+                color=discord.Color.green(),
+            )
+            e.set_footer(text=f"SLA ≈ {self.default_sla_days} nap • ISERO")
+            view = None
+            try:
+                await channel.send(embed=e, view=view)
+            except Exception:
+                await channel.send(embed=e)
+            self.log.info("Welcome embed posted: ch=%s kind=%s opener=%s", channel.id, kind, opener.id)
+        except Exception as e:
+            self.log.warning("post_welcome_and_sla failed: ch=%s err=%r", getattr(channel,'id',None), e)
     # endregion ISERO PATCH post-welcome
+
+    # region ISERO PATCH order-log/helpers
+    def _make_order_id(self, seed: int) -> str:
+        return f"ORD-{seed}-{int(time.time())}"
+
+    def build_order_embed(self, *, kind: str, opener: discord.Member, items_text: str, total_usd: float, due_utc: dt.datetime) -> discord.Embed:
+        order_id = self._make_order_id(opener.guild.id if opener and opener.guild else 0)
+        due_str = due_utc.strftime("%Y-%m-%d %H:%M UTC")
+        e = discord.Embed(
+            title=f"Megrendelés — {kind.capitalize()}",
+            description=f"Rendelő: {opener.mention}\nAzonosító: `{order_id}`",
+            color=discord.Color.blue(),
+        )
+        e.add_field(name="Tételek", value=items_text[:1024] or "—", inline=False)
+        e.add_field(name="Végösszeg (USD)", value=f"${total_usd:.2f}", inline=True)
+        e.add_field(name="Céldátum (≈ puha határidő)", value=due_str, inline=True)
+        e.set_footer(text="ISERO • OrderLog")
+        return e
+
+    async def post_order_log(self, *, channel: discord.TextChannel, embed: discord.Embed):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+        target = None
+        if self.mod_queue_id:
+            target = channel.guild.get_channel(self.mod_queue_id)
+        if not target and self.mod_logs_id:
+            target = channel.guild.get_channel(self.mod_logs_id)
+        if target:
+            try:
+                await target.send(embed=embed)
+                self.log.info("Order posted to mod channel: ch=%s target=%s", channel.id, target.id)
+            except Exception as e:
+                self.log.warning("Order post failed: ch=%s target=%s err=%r", channel.id, getattr(target,'id',None), e)
+    # endregion
+
+    # region ISERO PATCH ticket-perms/helpers
+    def _ticket_overwrites(self, guild: discord.Guild, opener: discord.Member):
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False, send_messages=False),
+            opener: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
+        }
+        overwrites[guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True, embed_links=True, attach_files=True)
+        if self.staff_role_id:
+            r = guild.get_role(self.staff_role_id)
+            if r:
+                overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_messages=True)
+        for rid in getattr(self, "staff_extra_role_ids", []):
+            r = guild.get_role(rid)
+            if r:
+                overwrites[r] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        return overwrites
+
+    async def ensure_ticket_perms(self, channel: discord.TextChannel, opener: discord.Member):
+        """Garantálja, hogy az opener lát és ír a ticketben (channel unavailable fix)."""
+        try:
+            ow = channel.overwrites_for(opener)
+            need = (not ow.view_channel) or (not ow.send_messages)
+            if need:
+                await channel.set_permissions(opener, view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+                self.log.info("Ticket perms fixed for opener id=%s in channel id=%s", opener.id, channel.id)
+        except Exception as e:
+            self.log.warning("ensure_ticket_perms failed: ch=%s opener=%s err=%r", getattr(channel,'id',None), getattr(opener,'id',None), e)
+    # endregion
 
     # --------- Utilities ----------
     def _cooldown_left(self, user_id: int) -> int:
@@ -296,19 +397,7 @@ class TicketsCog(commands.Cog):
         topic = f"{owner_marker(user.id)} | type:{key}"
 
         # permission overwrites
-        overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            user: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True,
-                attach_files=True, embed_links=True
-            ),
-        }
-        if STAFF_ROLE_ID:
-            role = guild.get_role(STAFF_ROLE_ID)
-            if role:
-                overwrites[role] = discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-                )
+        overwrites = self._ticket_overwrites(guild, user)
 
         ch = await guild.create_text_channel(
             name=name,
@@ -515,6 +604,28 @@ class TicketsCog(commands.Cog):
                 )
                 self.mebinu_sessions.pop(ch.id, None)
             return
+
+        # region ISERO PATCH mebinu-agent-signal
+        opener_id = self.mebinu_agent_openers.get(ch.id)
+        if opener_id and message.author.id == opener_id and message.content:
+            qty, budget, style = extract_signals(message.content)
+            if qty is not None or budget is not None or style is not None:
+                if os.getenv("PLAYER_CARD_ENABLED", "false").lower() == "true":
+                    ag = self.bot.get_cog("AgentGate")
+                    pcog = getattr(ag, "db", None)
+                    if pcog and hasattr(pcog, "set_fields"):
+                        updates = {}
+                        if qty is not None:
+                            updates["last_qty"] = qty
+                        if budget is not None:
+                            updates["last_budget"] = budget
+                        if style is not None:
+                            updates["last_style"] = style
+                        try:
+                            await pcog.set_fields(message.author.id, **updates)
+                        except Exception:
+                            pass
+        # endregion
 
         # 2) opcionális text fallback a hub parancsokra
         raw = message.content.strip().lower()
