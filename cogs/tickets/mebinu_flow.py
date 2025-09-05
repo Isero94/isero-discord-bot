@@ -24,6 +24,7 @@ def _envb(name: str, default: str = "false") -> bool:
 _SUPPRESS_ALWAYS = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
 _LEGACY_VISIBLE = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
 _LEGACY_ENABLED = (_LEGACY_VISIBLE and not _SUPPRESS_ALWAYS)
+_SWEEP_EVERY_MSG = _envb("MEBINU_SWEEP_EVERY_MSG", "true")
 # endregion
 
 QUESTIONS = [
@@ -86,6 +87,18 @@ async def _purge_legacy_block(channel: discord.TextChannel):
     except Exception:
         pass
 # endregion
+
+
+def _agent_active(bot, channel_id: int) -> bool:
+    ag = bot.get_cog("AgentGate") if bot else None
+    try:
+        return bool(ag and getattr(ag, "is_active", lambda _id: False)(channel_id))
+    except Exception:
+        return False
+
+
+async def _sweep_legacy(channel: discord.TextChannel):
+    await _purge_legacy_block(channel)
 
 
 @dataclass
@@ -162,7 +175,7 @@ async def start_flow(cog, interaction) -> bool:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
         if agent:
             if getattr(agent, "sessions", {}).get(ch.id):
-                await _purge_legacy_block(ch)
+                await _sweep_legacy(ch)
                 if show_legacy and not suppress_always:
                     await interaction.response.send_message("ISERO már aktív ebben a ticketben. 😊 Folytassuk a részletekkel!")
                 return True
@@ -175,7 +188,7 @@ async def start_flow(cog, interaction) -> bool:
                     prefer_heavy=True,
                     ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
                 )
-                await _purge_legacy_block(ch)
+                await _sweep_legacy(ch)
                 await interaction.response.send_message(
                     "Oké, nézzük meg együtt! 😊 Röviden: milyen hangulatú/ruhájú Mebinut szeretnél elsőnek?"
                 )
@@ -191,7 +204,7 @@ async def start_flow(cog, interaction) -> bool:
                 )
                 return True
     if not show_legacy or suppress_always:
-        await _purge_legacy_block(ch)
+        await _sweep_legacy(ch)
         await interaction.response.send_message("Írd le röviden az elképzelést, és végigkérdezlek lépésenként. 😉")
         return True
     session = MebinuSession()

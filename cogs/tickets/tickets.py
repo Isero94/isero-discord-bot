@@ -247,6 +247,7 @@ class TicketsCog(commands.Cog):
         self._suppress_always = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
         self._legacy_visible = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
         self._legacy_enabled = (self._legacy_visible and not self._suppress_always)
+        self._sweep_every_msg = _envb("MEBINU_SWEEP_EVERY_MSG", "true")
         self._legacy_keys = (
             "Melyik termék vagy téma?", "Mennyiség, ritkaság, színvilág?", "Határidő", "Keret (HUF/EUR)?",
             "Van 1-4 referencia kép?", "max 800", "Which product/variant", "quantity", "deadline", "budget", "reference image",
@@ -593,7 +594,7 @@ class TicketsCog(commands.Cog):
         # endregion
 
         # region ISERO PATCH kill-legacy-hints
-        if isinstance(ch, discord.TextChannel) and hasattr(ch, "topic") and "type=mebinu" in (ch.topic or ""):
+        if self._sweep_every_msg and isinstance(ch, discord.TextChannel) and hasattr(ch, "topic") and "type=mebinu" in (ch.topic or ""):
             gate = self.bot.get_cog("AgentGate")
             if (not self._legacy_enabled) or (gate and getattr(gate, "is_active", lambda _ch: False)(ch.id)):
                 try:
