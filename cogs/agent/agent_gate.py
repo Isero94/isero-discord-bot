@@ -421,6 +421,30 @@ class AgentGate(commands.Cog):
         return int(sess.get("turns", 0)) >= int(sess.get("max_turns", 0))
     # endregion
 
+    # region ISERO PATCH agent-commands
+    @commands.hybrid_command(name="extendagent", description="Megnyújtja az aktuális agent session turn limitjét (alap: +8).")
+    async def extendagent(self, ctx: commands.Context, extra_turns: int = 8):
+        sess = self.sessions.get(ctx.channel.id)
+        if not sess:
+            return await ctx.reply("Nincs aktív agent session ebben a csatornában.")
+        try:
+            extra = max(1, int(extra_turns))
+            sess["max_turns"] = int(sess.get("max_turns", 0)) + extra
+            await ctx.reply(f"Agent turn limit növelve: {sess['turns']}/{sess['max_turns']}.")
+        except Exception:
+            await ctx.reply("Nem sikerült növelni a limitet.")
+
+    @commands.hybrid_command(name="closeagent", description="Lezárja az aktuális agent sessiont.")
+    async def closeagent(self, ctx: commands.Context):
+        if not self.sessions.get(ctx.channel.id):
+            return await ctx.reply("Nincs aktív agent session.")
+        await self.stop_session(ctx.channel)
+        try:
+            await ctx.reply("Agent session lezárva. ✅")
+        except Exception:
+            pass
+    # endregion ISERO PATCH agent-commands
+
     def _ai_gate(self, message: discord.Message, ctx) -> bool:
         if not settings.FEATURES_AI_GATE_V1:
             return True

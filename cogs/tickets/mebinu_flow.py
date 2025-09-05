@@ -215,3 +215,55 @@ async def checkoutmebinu(ctx: commands.Context, qty: int | None = None):
     except Exception:
         pass
 # endregion ISERO PATCH mebinu-checkout
+
+# region ISERO PATCH mebinu-summary
+@commands.hybrid_command(name="summarymebinu", description="Rövid összefoglaló a csatorna beszélgetése alapján (qty/budget/style + ár).")
+async def summarymebinu(ctx: commands.Context):
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.reply("Csak csatornában használható.")
+    opener = ctx.author
+    pcog = ctx.bot.get_cog("PlayerDB")
+    snap = {}
+    if pcog and os.getenv("PLAYER_CARD_ENABLED", "false").lower() == "true":
+        try:
+            snap = pcog.get_snapshot(opener.id) or {}
+        except Exception:
+            snap = {}
+    qty = int(snap.get("last_qty") or 1)
+    style = snap.get("last_style") or "—"
+    budget = snap.get("last_budget")
+    unit, bulk_min, off_each = env_prices()
+    sub, disc, total = calc_total(unit, qty, bulk_min, off_each)
+    styles_seen = set()
+    try:
+        async for m in ctx.channel.history(limit=30):
+            t = (m.content or "").lower()
+            for kw in ("piros","vörös","fekete","zöld","lila","rózsaszín","pastel","kawaii","angel","démon","dark","cute","neon"):
+                if kw in t:
+                    styles_seen.add(kw)
+    except Exception:
+        pass
+    if style == "—" and styles_seen:
+        style = ", ".join(sorted(styles_seen))[:120]
+    due = dt.datetime.utcnow() + dt.timedelta(days=int(os.getenv("TICKET_DEFAULT_SLA_DAYS","3") or "3"))
+    e = discord.Embed(
+        title="Mebinu — Összefoglaló",
+        description=f"Rendelő: {opener.mention}",
+        color=discord.Color.purple(),
+    )
+    e.add_field(name="Mennyiség", value=str(qty), inline=True)
+    e.add_field(name="Stílus/szín", value=style, inline=True)
+    e.add_field(name="Keret", value=(f"${budget}" if budget else "—"), inline=True)
+    items = f"{qty} × Mebinu @ ${unit:.2f}  =  ${sub:.2f}"
+    if disc > 0:
+        items += f"\nKedvezmény (≥{bulk_min}): −${disc:.2f}"
+    e.add_field(name="Árösszegzés", value=f"{items}\n**Végösszeg: ${total:.2f}**", inline=False)
+    e.add_field(name="Céldátum (≈ puha határidő)", value=due.strftime("%Y-%m-%d %H:%M UTC"), inline=False)
+    e.set_footer(text="ISERO • Brief Summary")
+    msg = await ctx.reply(embed=e)
+    if os.getenv("ORDER_SUMMARY_PIN", "true").lower() == "true":
+        try:
+            await msg.pin()
+        except Exception:
+            pass
+# endregion ISERO PATCH mebinu-summary
