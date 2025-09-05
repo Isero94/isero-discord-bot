@@ -120,11 +120,12 @@ async def start_flow(cog, interaction) -> bool:
 
     use_agent = os.getenv("MEBINU_USE_AGENT", "true").lower() == "true"
     show_legacy = os.getenv("MEBINU_LEGACY_HINT_VISIBLE", "false").lower() == "true"
+    suppress_always = os.getenv("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true").lower() == "true"
     if use_agent:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
         if agent:
             if getattr(agent, "sessions", {}).get(ch.id):
-                if show_legacy:
+                if show_legacy and not suppress_always:
                     await interaction.response.send_message("ISERO már aktív ebben a ticketben. 😊 Folytassuk a részletekkel!")
                 return True
             kb = getattr(cog, "kb", {}) or {}
@@ -150,7 +151,7 @@ async def start_flow(cog, interaction) -> bool:
                     "Bekapcsoltam. Írd le egy mondatban, mit szeretnél, és kérdezek lépésenként. ✍️"
                 )
                 return True
-    if not show_legacy:
+    if not show_legacy or suppress_always:
         await interaction.response.send_message("Írd le röviden az elképzelést, és végigkérdezlek lépésenként. 😉")
         return True
     session = MebinuSession()

@@ -421,6 +421,12 @@ class AgentGate(commands.Cog):
         return int(sess.get("turns", 0)) >= int(sess.get("max_turns", 0))
     # endregion
 
+    # region ISERO PATCH agent-active-check
+    def is_active(self, channel_id: int) -> bool:
+        """Külső coggok egy hívással ellenőrizhetik, van-e élő LLM session."""
+        return bool(self.sessions.get(channel_id))
+    # endregion
+
     # region ISERO PATCH agent-commands
     @commands.hybrid_command(name="extendagent", description="Megnyújtja az aktuális agent session turn limitjét (alap: +8).")
     async def extendagent(self, ctx: commands.Context, extra_turns: int = 8):

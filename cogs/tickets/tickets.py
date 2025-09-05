@@ -560,6 +560,23 @@ class TicketsCog(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
+        # region ISERO PATCH kill-legacy-hints
+        agent = self.bot.get_cog("AgentGate") if self.bot else None
+        if agent and hasattr(agent, "is_active") and agent.is_active(message.channel.id):
+            try:
+                async for m in message.channel.history(limit=6):
+                    if not m.author.bot:
+                        continue
+                    txt = (m.content or "").lower()
+                    if any(k in txt for k in ("melyik termék vagy téma", "max 800", "keret (huf/eur)")):
+                        try:
+                            await m.delete()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        # endregion
+
         # 1) SELF-FLOW képfogás
         ch = message.channel
         if isinstance(ch, discord.TextChannel) and ch.id in self.pending:
