@@ -230,6 +230,17 @@ class TicketsCog(commands.Cog):
                 pass
         # endregion
 
+        # region ISERO PATCH order-log/init
+        try:
+            self.mod_queue_id = int(os.getenv("CHANNEL_MOD_QUEUE", "0") or "0")
+        except Exception:
+            self.mod_queue_id = 0
+        try:
+            self.mod_logs_id = int(os.getenv("CHANNEL_MOD_LOGS", "0") or "0")
+        except Exception:
+            self.mod_logs_id = 0
+        # endregion
+
     # --------- Embeds ----------
     def hub_embed(self) -> discord.Embed:
         e = discord.Embed(title="Ticket Hub")
@@ -288,6 +299,42 @@ class TicketsCog(commands.Cog):
         except Exception as e:
             self.log.warning("post_welcome_and_sla failed: ch=%s err=%r", getattr(channel,'id',None), e)
     # endregion ISERO PATCH post-welcome
+
+    # region ISERO PATCH order-log/helpers
+    def _make_order_id(self, seed: int) -> str:
+        return f"ORD-{seed}-{int(time.time())}"
+
+    def build_order_embed(self, *, kind: str, opener: discord.Member, items_text: str, total_usd: float, due_utc: dt.datetime) -> discord.Embed:
+        order_id = self._make_order_id(opener.guild.id if opener and opener.guild else 0)
+        due_str = due_utc.strftime("%Y-%m-%d %H:%M UTC")
+        e = discord.Embed(
+            title=f"Megrendelés — {kind.capitalize()}",
+            description=f"Rendelő: {opener.mention}\nAzonosító: `{order_id}`",
+            color=discord.Color.blue(),
+        )
+        e.add_field(name="Tételek", value=items_text[:1024] or "—", inline=False)
+        e.add_field(name="Végösszeg (USD)", value=f"${total_usd:.2f}", inline=True)
+        e.add_field(name="Céldátum (≈ puha határidő)", value=due_str, inline=True)
+        e.set_footer(text="ISERO • OrderLog")
+        return e
+
+    async def post_order_log(self, *, channel: discord.TextChannel, embed: discord.Embed):
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+        target = None
+        if self.mod_queue_id:
+            target = channel.guild.get_channel(self.mod_queue_id)
+        if not target and self.mod_logs_id:
+            target = channel.guild.get_channel(self.mod_logs_id)
+        if target:
+            try:
+                await target.send(embed=embed)
+                self.log.info("Order posted to mod channel: ch=%s target=%s", channel.id, target.id)
+            except Exception as e:
+                self.log.warning("Order post failed: ch=%s target=%s err=%r", channel.id, getattr(target,'id',None), e)
+    # endregion
 
     # region ISERO PATCH ticket-perms/helpers
     def _ticket_overwrites(self, guild: discord.Guild, opener: discord.Member):

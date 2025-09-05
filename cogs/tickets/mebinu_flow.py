@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List
 import discord
 import re
+import datetime as dt
 from discord.ext import commands
 from ..utils.prompt import compose_mebinu_prompt
 from ..utils.sales import calc_total, env_prices
@@ -181,3 +182,36 @@ async def offer(ctx: commands.Context, qty: int | None = None):
     except Exception:
         await ctx.send(txt)
 # endregion ISERO PATCH mebinu-offer-cmd
+
+# region ISERO PATCH mebinu-checkout
+@commands.hybrid_command(name="checkoutmebinu", description="Mebinu rendelés lezárása és logolása.")
+async def checkoutmebinu(ctx: commands.Context, qty: int | None = None):
+    if not isinstance(ctx.channel, discord.TextChannel):
+        return await ctx.reply("Csak csatornában használható.")
+    opener = ctx.author
+    if qty is None:
+        qty = 1
+        if os.getenv("PLAYER_CARD_ENABLED", "false").lower() == "true":
+            pcog = ctx.bot.get_cog("PlayerDB")
+            if pcog and hasattr(pcog, "get_snapshot"):
+                try:
+                    snap = pcog.get_snapshot(opener.id) or {}
+                    qty = int(snap.get("last_qty") or qty)
+                except Exception:
+                    pass
+    unit, bulk_min, off_each = env_prices()
+    sub, disc, total = calc_total(unit, qty, bulk_min, off_each)
+    items = f"{qty} × Mebinu @ ${unit:.2f}  =  ${sub:.2f}"
+    if disc > 0:
+        items += f"\nKedvezmény (≥{bulk_min}): −${disc:.2f}"
+    due = dt.datetime.utcnow() + dt.timedelta(days=int(os.getenv("TICKET_DEFAULT_SLA_DAYS","3") or "3"))
+    tickets = ctx.bot.get_cog("Tickets")
+    if not tickets:
+        return await ctx.reply("Ticket rendszer nem elérhető.")
+    emb = tickets.build_order_embed(kind="mebinu", opener=opener, items_text=items, total_usd=total, due_utc=due)
+    await tickets.post_order_log(channel=ctx.channel, embed=emb)
+    try:
+        await ctx.reply("Rendelés rögzítve és továbbítva a stábnak. ✅")
+    except Exception:
+        pass
+# endregion ISERO PATCH mebinu-checkout

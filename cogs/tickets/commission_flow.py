@@ -1,5 +1,5 @@
 from discord.ext import commands
-import discord, os
+import discord, os, datetime as dt
 from ..utils.prompt import compose_commission_prompt
 from ..utils.sales import calc_images, calc_videos
 
@@ -62,4 +62,50 @@ class CommissionFlow(commands.Cog):
                + f" → **Végösszeg: ${total:.2f}**  ( {bulk_min}+ videónál −${off:.0f}/videó )")
         try: await ctx.reply(txt)
         except Exception: await ctx.send(txt)
+
+    # region ISERO PATCH commission-checkout
+    @commands.hybrid_command(name="checkoutimg", description="Képes rendelés lezárása és logolása.")
+    async def checkoutimg(self, ctx: commands.Context, qty: int):
+        if not isinstance(ctx.channel, discord.TextChannel):
+            return await ctx.reply("Csak csatornában használható.")
+        unit = float(os.getenv("IMG_BASE_PRICE_USD", "6") or "6")
+        bulk_min = int(os.getenv("IMG_BULK_MIN_QTY", "4") or "4")
+        off = float(os.getenv("IMG_BULK_OFF_USD", "1") or "1")
+        sub, disc, total = calc_images(unit, qty, bulk_min, off)
+        items = f"{qty} × Kép @ ${unit:.2f}  =  ${sub:.2f}"
+        if disc > 0:
+            items += f"\nKedvezmény (≥{bulk_min}): −${disc:.2f}"
+        due = dt.datetime.utcnow() + dt.timedelta(days=int(os.getenv("TICKET_DEFAULT_SLA_DAYS","3") or "3"))
+        tickets = getattr(self.bot, "get_cog", lambda _n: None)("Tickets")
+        if not tickets:
+            return await ctx.reply("Ticket rendszer nem elérhető.")
+        emb = tickets.build_order_embed(kind="commission-image", opener=ctx.author, items_text=items, total_usd=total, due_utc=due)
+        await tickets.post_order_log(channel=ctx.channel, embed=emb)
+        try:
+            await ctx.reply("Rendelés rögzítve (képek). ✅")
+        except Exception:
+            pass
+
+    @commands.hybrid_command(name="checkoutvid", description="Videós rendelés lezárása és logolása.")
+    async def checkoutvid(self, ctx: commands.Context, seconds_per_video: int, qty: int = 1):
+        if not isinstance(ctx.channel, discord.TextChannel):
+            return await ctx.reply("Csak csatornában használható.")
+        per5 = float(os.getenv("VID_PRICE_PER_5S_USD", "20") or "20")
+        bulk_min = int(os.getenv("VID_BULK_MIN_QTY", "4") or "4")
+        off = float(os.getenv("VID_BULK_OFF_USD", "5") or "5")
+        per_video, sub, disc, total = calc_videos(per5, seconds_per_video, qty, bulk_min, off)
+        items = f"{qty} × Videó @ ${per5:.0f}/5s  (videónként ~${per_video:.2f})  =  ${sub:.2f}"
+        if disc > 0:
+            items += f"\nKedvezmény (≥{bulk_min}): −${disc:.2f}"
+        due = dt.datetime.utcnow() + dt.timedelta(days=int(os.getenv("TICKET_DEFAULT_SLA_DAYS","3") or "3"))
+        tickets = getattr(self.bot, "get_cog", lambda _n: None)("Tickets")
+        if not tickets:
+            return await ctx.reply("Ticket rendszer nem elérhető.")
+        emb = tickets.build_order_embed(kind="commission-video", opener=ctx.author, items_text=items, total_usd=total, due_utc=due)
+        await tickets.post_order_log(channel=ctx.channel, embed=emb)
+        try:
+            await ctx.reply("Rendelés rögzítve (videók). ✅")
+        except Exception:
+            pass
+    # endregion ISERO PATCH commission-checkout
 # endregion ISERO PATCH commission-flow
