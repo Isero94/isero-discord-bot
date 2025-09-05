@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 import os
+import re
+import logging
 from dataclasses import dataclass, field
 from typing import List
 import discord
-import re
 import datetime as dt
 from discord.ext import commands
 from ..utils.prompt import compose_mebinu_prompt
@@ -13,6 +14,8 @@ from ..utils.sales import calc_total, env_prices
 from .general_flow import _is_nsfw_env
 
 MAX_TURNS = 10
+
+log = logging.getLogger("ISERO.Mebinu")
 
 QUESTIONS = [
     "Melyik termék vagy variáns érdekel?",
@@ -48,6 +51,31 @@ def extract_signals(text: str):
     styles = [sm.group(1).lower() for sm in _RE_STYLE.finditer(text)]
     style = ", ".join(dict.fromkeys(styles)) if styles else None
     return qty, budget, style
+# endregion
+
+# region ISERO PATCH legacy-purge
+LEGACY_KEYS = (
+    "Melyik termék vagy téma?", "Mennyiség, ritkaság, színvilág?", "Határidő", "Keret (HUF/EUR)?",
+    "Van 1-4 referencia képed?",
+    "Which product/variant", "quantity", "deadline", "budget", "reference image",
+)
+
+async def _purge_legacy_block(channel: discord.TextChannel):
+    if not isinstance(channel, discord.TextChannel):
+        return
+    try:
+        async for m in channel.history(limit=30):
+            if not m.author.bot:
+                continue
+            txt = m.content or ""
+            if any(k in txt for k in LEGACY_KEYS):
+                try:
+                    await m.delete()
+                    log.info("Legacy prompt removed msg_id=%s in #%s", m.id, channel.id)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 # endregion
 
 
@@ -125,6 +153,7 @@ async def start_flow(cog, interaction) -> bool:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
         if agent:
             if getattr(agent, "sessions", {}).get(ch.id):
+                await _purge_legacy_block(ch)
                 if show_legacy and not suppress_always:
                     await interaction.response.send_message("ISERO már aktív ebben a ticketben. 😊 Folytassuk a részletekkel!")
                 return True
@@ -137,6 +166,7 @@ async def start_flow(cog, interaction) -> bool:
                     prefer_heavy=True,
                     ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
                 )
+                await _purge_legacy_block(ch)
                 await interaction.response.send_message(
                     "Oké, nézzük meg együtt! 😊 Röviden: milyen hangulatú/ruhájú Mebinut szeretnél elsőnek?"
                 )
@@ -152,6 +182,7 @@ async def start_flow(cog, interaction) -> bool:
                 )
                 return True
     if not show_legacy or suppress_always:
+        await _purge_legacy_block(ch)
         await interaction.response.send_message("Írd le röviden az elképzelést, és végigkérdezlek lépésenként. 😉")
         return True
     session = MebinuSession()
