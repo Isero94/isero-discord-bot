@@ -9,11 +9,6 @@ pricing:
   bulk_discount:
     min_qty: 4
     off_per_item_usd: 5
-questions:
-  - "Milyen hangulatot/színt látnál szívesen? (pl. erdei/zsályazöld, pasztell lila)"
-  - "Legyen témája? (pl. mágus, űr, konyha/food, zenész, gamer)"
-  - "Kell logó/hímzett felirat? (mit írjunk rá?)"
-  - "Kérsz extra kiegészítőt? (pl. kristályfül, köpeny, hotdog-jelmez)"
 sales_tips:
   - "4+ egyedi rendelésnél darabonként 5 USD kedvezményt adunk."
   - "Ha több színverziót kérsz, gyorsabban kapsz végső koncepciót."
@@ -23,3 +18,29 @@ system_prompt: |
   Goal: turn interest into a clear brief and close the sale. Keep tone friendly,
   concise, and proactive. If user hesitates on price, explain the value:
   custom design, high-res delivery, iteration time. Offer bulk discount for 4+.
+facts:
+  - "Soft, chibi-like silhouette; big expressive eyes."
+  - "Custom palette & themed outfit (e.g., mage, space, foodie, gamer)."
+  - "Delivery: high-res PNG; source prompt notes on request."
+  - "Default turnaround ≈ 3 days (queue-dependent)."
+  - "One small revision free after first sketch."
+variants:
+  - "Classic (hoodie + emblem)"
+  - "Mage (cloak + crystal-ear)"
+  - "Street (cap + tag logo)"
+  - "Space (visor + neon trim)"
+  - "Angel/Demon (halo/horns, wings)"
+style_words:
+  - piros - vörös - crimson
+  - fekete - matt black
+  - zöld - lime - neon green
+  - pasztell - pastel - kawaii
+  - arany - ezüst - metallic
+objections:
+  - cue: "drága|expensive|too much"
+    say: "A minőséghez több iteráció és finomhangolás kell — benne van a vázlat + 1 apró módosítás. 4+ darabnál -5 USD/db megy."
+  - cue: "siet|urgent|rush"
+    say: "Alap ≈3 nap — ha sürgős, megpróbálom előrevenni a sorban és jelzek reális céldátumot."
+closing_lines:
+  - "Ha elsőre 2 darabbal kezdenénk, gyorsabban látod a stílust — és 4-nél már jön a kedvezmény."
+  - "A leírás alapján kezdhetek egy piros-fekete és egy pastel verzióval — mehet?"
