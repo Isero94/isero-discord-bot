@@ -29,7 +29,6 @@ TICKET_COOLDOWN_SEC   = settings.TICKET_COOLDOWN_SECONDS
 
 NSFW_ROLE_NAME        = settings.NSFW_ROLE_NAME
 MAX_ATTACH            = 4  # self-flowban ennyi referencia kép engedett
-LEGACY_HINT_BLOCK     = "Please list product, quantity, style, deadline, budget and references."
 
 # ---- channel topic marker / helpers ----
 def owner_marker(user_id: int) -> str:
@@ -253,7 +252,7 @@ class TicketsCog(commands.Cog):
         self._suppress_always = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
         self._legacy_visible = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
         self._legacy_enabled = (self._legacy_visible and not self._suppress_always)
-        self._sweep_every_msg = _envb("MEBINU_SWEEP_EVERY_MSG", "true")
+        self._sweep_every_msg = _envb("MEBINU_SWEEP_EVERY_MSG", "false")
         self._legacy_keys = (
             "Melyik termék vagy téma?", "Mennyiség, ritkaság, színvilág?", "Határidő", "Keret (HUF/EUR)?",
             "Van 1-4 referencia kép?", "max 800", "Which product/variant", "quantity", "deadline", "budget", "reference image",
@@ -285,7 +284,7 @@ class TicketsCog(commands.Cog):
         e.description = (
             f"Hello {user.mention}! Ez itt a privát ticket csatornád.\n"
             "Válassz lent: **Én írom meg** vagy **ISERO írja meg**.\n"
-            "• *Én írom meg* → rövid leírást adsz (max 800), majd max **4** referencia képet tölthetsz fel.\n"
+            "• *Én írom meg* → rövid leírást adsz, majd max **4** referencia képet tölthetsz fel.\n"
             "• *ISERO írja meg* → kérdésekben végigvisz a pontosításon.\n\n"
             "*Használd a piros gombot, ha végeztél: Close Ticket.*"
         )
@@ -436,11 +435,6 @@ class TicketsCog(commands.Cog):
                     break
         # endregion ISERO PATCH NSFW_SAFE_MODE
         await ch.send(embed=self.welcome_embed(user, key), view=view)
-        # region ISERO PATCH MEBINU_hide_legacy_when_dialog_on
-        from utils import policy as _policy
-        if not (_policy.getbool("FEATURES_MEBINU_DIALOG_V1", default=False) or _policy.feature_on("mebinu_dialog_v1")):
-            await ch.send(LEGACY_HINT_BLOCK)
-        # endregion ISERO PATCH MEBINU_hide_legacy_when_dialog_on
         await ch.send(view=CloseTicketView(self))
         return ch
 
@@ -606,7 +600,6 @@ class TicketsCog(commands.Cog):
                                 pass
                 except Exception:
                     pass
-                return
         # endregion
 
         # 1) SELF-FLOW képfogás

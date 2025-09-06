@@ -48,6 +48,7 @@ class GeneralFlow(commands.Cog):
         try:
             await agent.start_session(
                 channel=channel,
+                opener=opener,
                 system_prompt=sys,
                 prefer_heavy=True,
                 ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),

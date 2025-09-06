@@ -14,6 +14,11 @@ from discord.ext import commands
 from cogs.utils import context as ctx_flags
 from bot.config import settings
 from cogs.agent.playerdb import PlayerDB
+from ..utils.prompt import (
+    compose_mebinu_prompt,
+    compose_commission_prompt,
+    compose_general_prompt,
+)
 
 from cogs.utils.wake import WakeMatcher
 from cogs.utils.text import chunk_message, truncate_by_chars
@@ -61,7 +66,7 @@ WAKE = WakeMatcher()
 WAKE_WORDS = [w.lower() for w in _csv_list(os.getenv("WAKE_WORDS", ""))]
 
 AGENT_DAILY_TOKEN_LIMIT = _env_int("AGENT_DAILY_TOKEN_LIMIT", 20000) or 20000
-AGENT_REPLY_COOLDOWN_SECONDS = _env_int("AGENT_REPLY_COOLDOWN_SECONDS", 20) or 20
+AGENT_REPLY_COOLDOWN_SECONDS = _env_int("AGENT_REPLY_COOLDOWN_SECONDS", 6) or 6
 AGENT_SESSION_MIN_CHARS = _env_int("AGENT_SESSION_MIN_CHARS", 4) or 4
 AGENT_DEDUP_TTL_SECONDS = _env_int("AGENT_DEDUP_TTL_SECONDS", 5) or 5
 
@@ -355,20 +360,42 @@ class AgentGate(commands.Cog):
         return False
 
     # region ISERO PATCH start-session
-    async def start_session(self, channel, system_prompt: str, prefer_heavy: bool = False, ttl_seconds: int = 120):
-        """Start a guided agent session with optional heavy model preference."""
+    async def start_session(
+        self,
+        channel: discord.TextChannel,
+        opener: discord.Member | None = None,
+        *,
+        system_prompt: str | None = None,
+        prefer_heavy: bool = True,
+        ttl_seconds: int = 120,
+    ) -> bool:
+        """Start an agent session; auto-compose prompt if not provided."""
         # region ISERO PATCH session-caps:init
-        max_turns = int(os.getenv("AGENT_TURNS_MAX", "10") or "10")
+        max_turns = int(os.getenv("AGENT_TURNS_MAX", "12") or "12")
         char_limit = int(os.getenv("AGENT_TURN_CHAR_LIMIT", "300") or "300")
         model = os.getenv("OPENAI_MODEL_HEAVY" if prefer_heavy else "OPENAI_MODEL", "gpt-4o-mini")
         # endregion
+
+        if self.is_active(channel.id):
+            return False
+
+        if system_prompt is None:
+            tickets = self.bot.get_cog("Tickets")
+            kb = getattr(tickets, "kb", {}) if tickets else {}
+            topic = (getattr(channel, "topic", "") or "")
+            if "type=mebinu" in topic:
+                system_prompt = compose_mebinu_prompt(self.bot, channel, opener, kb)
+            elif "type=commission" in topic:
+                system_prompt = compose_commission_prompt(self.bot, channel, opener, kb)
+            else:
+                system_prompt = compose_general_prompt(self.bot, channel, opener, kb)
+
         try:
             self.session_context[channel.id] = {
                 "system": system_prompt,
                 "prefer_heavy": prefer_heavy,
                 "ttl": ttl_seconds,
             }
-            # region ISERO PATCH session-caps:register
             self.sessions[channel.id] = {
                 "turns": 0,
                 "max_turns": max_turns,
@@ -378,14 +405,89 @@ class AgentGate(commands.Cog):
             }
             self._logger.info(
                 "Agent session started: channel=%s model=%s caps(turns=%d,char=%d)",
-                channel.id, model, max_turns, char_limit
+                channel.id, model, max_turns, char_limit,
             )
-            # endregion
-            await channel.send("ISERO bekapcsolt. Kezdjük a briefet! ✍️")
         except Exception:
-            pass
+            self._logger.exception("start_session failed")
+            return False
         return True
     # endregion ISERO PATCH start-session
+
+    async def stop_session(self, channel):
+        """Stop an active agent session for the given channel."""
+        self.session_context.pop(channel.id, None)
+        # region ISERO PATCH session-caps:stoplog
+        sess = self.sessions.pop(channel.id, None)
+        if sess:
+            dur = int(time.time() - sess.get("started_at", time.time()))
+            self._logger.info(
+                "Agent session stopped: channel=%s turns=%d/%d dur=%ss",
+                channel.id, sess.get("turns", 0), sess.get("max_turns", 0), dur
+            )
+        # endregion
+        return True
+
+    # region ISERO PATCH session-caps:helpers
+    def _get_sess(self, channel_id: int):
+        return self.sessions.get(channel_id)
+
+    def _inc_turn(self, channel_id: int, user_len: int = 0, bot_len: int = 0):
+        sess = self.sessions.get(channel_id)
+        if not sess:
+            return None
+        sess["turns"] = int(sess.get("turns", 0)) + 1
+        sess["last_user_len"] = user_len
+        sess["last_bot_len"] = bot_len
+        return sess
+
+    def is_exhausted(self, channel_id: int) -> bool:
+        sess = self.sessions.get(channel_id)
+        if not sess:
+            return False
+        return int(sess.get("turns", 0)) >= int(sess.get("max_turns", 0))
+    # endregion
+
+    # region ISERO PATCH agent-active-check
+    def is_active(self, channel_id: int) -> bool:
+        """Külső coggok egy hívással ellenőrizhetik, van-e élő LLM session."""
+        return bool(self.sessions.get(channel_id))
+    # endregion
+
+    # region ISERO PATCH agent-commands
+    @commands.hybrid_command(name="extendagent", description="Megnyújtja az aktuális agent session turn limitjét (alap: +8).")
+    async def extendagent(self, ctx: commands.Context, extra_turns: int = 8):
+        sess = self.sessions.get(ctx.channel.id)
+        if not sess:
+            return await ctx.reply("Nincs aktív agent session ebben a csatornában.")
+        try:
+            extra = max(1, int(extra_turns))
+            sess["max_turns"] = int(sess.get("max_turns", 0)) + extra
+            await ctx.reply(f"Agent turn limit növelve: {sess['turns']}/{sess['max_turns']}.")
+        except Exception:
+            await ctx.reply("Nem sikerült növelni a limitet.")
+
+    @commands.hybrid_command(name="closeagent", description="Lezárja az aktuális agent sessiont.")
+    async def closeagent(self, ctx: commands.Context):
+        if not self.sessions.get(ctx.channel.id):
+            return await ctx.reply("Nincs aktív agent session.")
+        await self.stop_session(ctx.channel)
+        try:
+            await ctx.reply("Agent session lezárva. ✅")
+        except Exception:
+            pass
+
+    @commands.hybrid_command(name="startagent", description="Agent indítása ebben a csatornában.")
+    async def startagent(self, ctx: commands.Context):
+        try:
+            ok = await self.start_session(ctx.channel, opener=ctx.author)
+            if ok:
+                await ctx.reply("ISERO bekapcsolt. Kezdjük a briefet! ✍️")
+            else:
+                await ctx.reply("Már fut egy agent session vagy nem sikerült indítani.")
+        except Exception:
+            self._logger.exception("startagent failed")
+            await ctx.reply("Nem sikerült elindítani az agentet.")
+    # endregion ISERO PATCH agent-commands
 
     async def stop_session(self, channel):
         """Stop an active agent session for the given channel."""
@@ -607,421 +709,7 @@ class AgentGate(commands.Cog):
                     await self._safe_send_reply(message, f"Itt nem válaszolok, gyere ide: {dest}")
             return
 
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if decision.mode == "guided" and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
-
-        if ctx.is_ticket and ctx.ticket_type == "mebinu":
-            questions = [
-                "Melyik termék vagy téma? (figura/variáns)",
-                "Mennyiség, ritkaság, színvilág?",
-                "Határidő (nap/dátum)?",
-                "Keret (HUF/EUR)?",
-                "Van 1–4 referencia kép?",
-                "Ha kész a rövid leírás, nyomd meg a Én írom meg gombot (max 800 karakter + 4 kép).",
-            ]
-            for part in chunk_message("\n".join(questions)):
-                await self._safe_send_reply(message, part)
-            return
+        # legacy guided questionnaire disabled for Mebinu tickets
 
         # ping-pong
         low = raw.lower()

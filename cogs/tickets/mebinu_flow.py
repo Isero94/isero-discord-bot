@@ -24,7 +24,7 @@ def _envb(name: str, default: str = "false") -> bool:
 _SUPPRESS_ALWAYS = _envb("MEBINU_SUPPRESS_LEGACY_ALWAYS", "true")
 _LEGACY_VISIBLE = _envb("MEBINU_LEGACY_HINT_VISIBLE", "false")
 _LEGACY_ENABLED = (_LEGACY_VISIBLE and not _SUPPRESS_ALWAYS)
-_SWEEP_EVERY_MSG = _envb("MEBINU_SWEEP_EVERY_MSG", "true")
+_SWEEP_EVERY_MSG = _envb("MEBINU_SWEEP_EVERY_MSG", "false")
 # endregion
 
 QUESTIONS = [
@@ -192,7 +192,10 @@ async def start_flow(cog, interaction) -> bool:
         agent = cog.bot.get_cog("AgentGate") if cog.bot else None
         if agent:
             if getattr(agent, "sessions", {}).get(ch.id):
-                await _sweep_legacy(ch)
+                try:
+                    await _sweep_legacy(ch)
+                except Exception:
+                    pass
                 if show_legacy and not suppress_always:
                     await interaction.response.send_message("ISERO már aktív ebben a ticketben. 😊 Folytassuk a részletekkel!")
                 return True
@@ -201,11 +204,15 @@ async def start_flow(cog, interaction) -> bool:
             try:
                 await agent.start_session(
                     channel=ch,
+                    opener=interaction.user,
                     system_prompt=sys,
                     prefer_heavy=True,
                     ttl_seconds=int(os.getenv("AGENT_DEDUP_TTL_SECONDS", "120") or "120"),
                 )
-                await _sweep_legacy(ch)
+                try:
+                    await _sweep_legacy(ch)
+                except Exception:
+                    pass
                 await interaction.response.send_message(
                     "Oké, nézzük meg együtt! 😊 Röviden: milyen hangulatú/ruhájú Mebinut szeretnél elsőnek?"
                 )
@@ -221,7 +228,10 @@ async def start_flow(cog, interaction) -> bool:
                 )
                 return True
     if not show_legacy or suppress_always:
-        await _sweep_legacy(ch)
+        try:
+            await _sweep_legacy(ch)
+        except Exception:
+            pass
         await interaction.response.send_message("Írd le röviden az elképzelést, és végigkérdezlek lépésenként. 😉")
         return True
     session = MebinuSession()
@@ -349,3 +359,39 @@ async def summarymebinu(ctx: commands.Context):
         except Exception:
             pass
 # endregion ISERO PATCH mebinu-summary
+
+
+class MebinuFlow(commands.Cog):
+    """Auto-start agent in Mebinu tickets and purge legacy prompts."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.auto_start = os.getenv("AGENT_AUTO_START_ON_FIRST_MSG", "true").lower() == "true"
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+        ch = message.channel
+        topic = (getattr(ch, "topic", "") or "")
+        if "type=mebinu" not in topic:
+            return
+        gate = self.bot.get_cog("AgentGate")
+        if not gate:
+            return
+        if not gate.is_active(ch.id):
+            if not self.auto_start:
+                return
+            try:
+                await gate.start_session(ch, opener=message.author)
+                await ch.send("ISERO bekapcsolt. Kezdjük a briefet! ✍️")
+            except Exception as e:
+                log.warning("autostart failed ch=%s err=%r", ch.id, e)
+            return
+        if _SWEEP_EVERY_MSG:
+            try:
+                await _sweep_legacy(ch)
+            except Exception:
+                pass
+        return
+

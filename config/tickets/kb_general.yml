@@ -3,11 +3,6 @@ name: "General Help"
 what_is_it: >
   Általános segítség/hibajegy: kérdések, bugreport, javaslatok. Cél: gyors triage,
   egyértelmű leírás és átadás a stábnak, vagy azonnali válasz, ha megoldható.
-questions:
-  - "Mi a probléma/leírás egy mondatban?"
-  - "Hol történt? (csatorna/link)"
-  - "Mit vártál és mi történt valójában?"
-  - "Tudsz képernyőképet/logot adni?"
 facts:
   - "Bugreportnál reprodukció: lépések, környezet (mobil/desktop), időpont."
   - "SLA ≈ 3 nap (sorfüggő); kritikus hibánál előrevesszük."

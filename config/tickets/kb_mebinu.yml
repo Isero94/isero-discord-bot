@@ -9,11 +9,6 @@ pricing:
   bulk_discount:
     min_qty: 4
     off_per_item_usd: 5
-questions:
-  - "Milyen hangulatot/színt látnál szívesen? (pl. erdei/zsályazöld, pasztell lila)"
-  - "Legyen témája? (pl. mágus, űr, konyha/food, zenész, gamer)"
-  - "Kell logó/hímzett felirat? (mit írjunk rá?)"
-  - "Kérsz extra kiegészítőt? (pl. kristályfül, köpeny, hotdog-jelmez)"
 sales_tips:
   - "4+ egyedi rendelésnél darabonként 5 USD kedvezményt adunk."
   - "Ha több színverziót kérsz, gyorsabban kapsz végső koncepciót."

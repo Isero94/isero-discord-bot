@@ -23,12 +23,6 @@ pricing:
     - name: "Product promo (script+logo+closeups)"
       from_usd: 149.99
       to_usd: 249.99
-questions:
-  - "Képeket vagy videókat szeretnél? (vagy mindkettőt)"
-  - "Stílus/téma? (pl. gamer, neon, angel/demon, brand színek)"
-  - "Hány darab képet/videót képzelsz el?"
-  - "Videónál hány másodperc/videó a cél?"
-  - "Keret (HUF/EUR/USD)?"
 facts:
   - "Kép: nagy felbontású PNG, prompt jegyzet kérhető."
   - "Videó: 5 mp-es egységekben számolunk a minőség miatt."
