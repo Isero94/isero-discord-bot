@@ -69,7 +69,7 @@ class Tickets(commands.Cog):
             except Exception:
                 pass
         try:
-            await message.channel.send("Rögzítettem, a stáb értesítve.")
+            await message.channel.send("Köszi, rögzítettem.")
         except Exception:
             pass
 

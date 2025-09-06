@@ -60,7 +60,7 @@ def test_ticket_auto_submit_first_msg(monkeypatch):
     msg = types.SimpleNamespace(author=DummyAuthor(), channel=ch, content="hello world", attachments=[])
     ch._history.append(msg)
     asyncio.run(tickets.on_message(msg))
-    assert any("Rögzítettem" in (c or "") for c, _ in ch.sent)
+    assert any("Köszi" in (c or "") for c, _ in ch.sent)
     assert len(notify.sent) == 1
 
 def test_no_agent_no_legacy(monkeypatch):
@@ -99,4 +99,4 @@ def test_submit_cmd(monkeypatch):
     ctx = types.SimpleNamespace(channel=ch, reply=reply)
     asyncio.run(tickets.submit(ctx))
     assert len(notify.sent) == 1
-    assert any("Rögzítettem" in (c or "") for c, _ in ch.sent)
+    assert any("Köszi" in (c or "") for c, _ in ch.sent)
