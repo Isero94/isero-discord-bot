@@ -489,6 +489,70 @@ class AgentGate(commands.Cog):
             await ctx.reply("Nem sikerült elindítani az agentet.")
     # endregion ISERO PATCH agent-commands
 
+    async def stop_session(self, channel):
+        """Stop an active agent session for the given channel."""
+        self.session_context.pop(channel.id, None)
+        # region ISERO PATCH session-caps:stoplog
+        sess = self.sessions.pop(channel.id, None)
+        if sess:
+            dur = int(time.time() - sess.get("started_at", time.time()))
+            self._logger.info(
+                "Agent session stopped: channel=%s turns=%d/%d dur=%ss",
+                channel.id, sess.get("turns", 0), sess.get("max_turns", 0), dur
+            )
+        # endregion
+        return True
+
+    # region ISERO PATCH session-caps:helpers
+    def _get_sess(self, channel_id: int):
+        return self.sessions.get(channel_id)
+
+    def _inc_turn(self, channel_id: int, user_len: int = 0, bot_len: int = 0):
+        sess = self.sessions.get(channel_id)
+        if not sess:
+            return None
+        sess["turns"] = int(sess.get("turns", 0)) + 1
+        sess["last_user_len"] = user_len
+        sess["last_bot_len"] = bot_len
+        return sess
+
+    def is_exhausted(self, channel_id: int) -> bool:
+        sess = self.sessions.get(channel_id)
+        if not sess:
+            return False
+        return int(sess.get("turns", 0)) >= int(sess.get("max_turns", 0))
+    # endregion
+
+    # region ISERO PATCH agent-active-check
+    def is_active(self, channel_id: int) -> bool:
+        """Külső coggok egy hívással ellenőrizhetik, van-e élő LLM session."""
+        return bool(self.sessions.get(channel_id))
+    # endregion
+
+    # region ISERO PATCH agent-commands
+    @commands.hybrid_command(name="extendagent", description="Megnyújtja az aktuális agent session turn limitjét (alap: +8).")
+    async def extendagent(self, ctx: commands.Context, extra_turns: int = 8):
+        sess = self.sessions.get(ctx.channel.id)
+        if not sess:
+            return await ctx.reply("Nincs aktív agent session ebben a csatornában.")
+        try:
+            extra = max(1, int(extra_turns))
+            sess["max_turns"] = int(sess.get("max_turns", 0)) + extra
+            await ctx.reply(f"Agent turn limit növelve: {sess['turns']}/{sess['max_turns']}.")
+        except Exception:
+            await ctx.reply("Nem sikerült növelni a limitet.")
+
+    @commands.hybrid_command(name="closeagent", description="Lezárja az aktuális agent sessiont.")
+    async def closeagent(self, ctx: commands.Context):
+        if not self.sessions.get(ctx.channel.id):
+            return await ctx.reply("Nincs aktív agent session.")
+        await self.stop_session(ctx.channel)
+        try:
+            await ctx.reply("Agent session lezárva. ✅")
+        except Exception:
+            pass
+    # endregion ISERO PATCH agent-commands
+
     def _ai_gate(self, message: discord.Message, ctx) -> bool:
         if not settings.FEATURES_AI_GATE_V1:
             return True
