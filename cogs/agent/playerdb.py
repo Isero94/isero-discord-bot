@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 # region ISERO PATCH ticket_session imports
 from dataclasses import dataclass, field
@@ -54,6 +54,9 @@ class PlayerDB:
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
         self._owner_id = owner_id
+        # region ISERO PATCH in-memory-fallback
+        self._mem: Dict[int, Dict[str, Any]] = {}
+        # endregion
 
     async def start(self) -> None:
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=5)
@@ -123,6 +126,31 @@ class PlayerDB:
                 "SELECT allow_admin FROM players WHERE user_id=$1", user_id
             )
         return bool(v)
+
+    # region ISERO PATCH player-snapshot-api
+    def get_snapshot(self, user_id: int) -> Dict[str, Any]:
+        """Gyors olvasás a sales/agent komponenseknek (blocking)."""
+        try:
+            return dict(self._mem.get(user_id) or {})
+        except Exception:
+            return {}
+
+    async def set_fields(self, user_id: int, **fields: Any) -> None:
+        """Memóriába ír, opcionálisan DB-be is."""
+        base = self._mem.get(user_id) or {}
+        base.update(fields)
+        self._mem[user_id] = base
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as con:
+                await con.execute(
+                    "INSERT INTO players(user_id) VALUES($1) ON CONFLICT (user_id) DO NOTHING",
+                    user_id,
+                )
+        except Exception:
+            pass
+    # endregion
 
 # region ISERO PATCH ticket_session
 
